@@ -8,7 +8,7 @@
     <artifactId>rocketmq-connect-kafka</artifactId>
     <version>0.0.1-SNAPSHOT</version>
     <name>rocketmq-connect-kafka</name>
-    <packaging>pom</packaging>
+    <packaging>jar</packaging>
 
     <licenses>
         <license>

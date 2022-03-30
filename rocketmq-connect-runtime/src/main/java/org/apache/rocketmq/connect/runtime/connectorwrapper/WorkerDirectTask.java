@@ -108,6 +108,7 @@ public class WorkerDirectTask implements WorkerTask {
             log.info("Direct task start, config:{}", JSON.toJSONString(taskConfig));
             while (WorkerState.STARTED == workerState.get() && WorkerTaskState.RUNNING == state.get()) {
                 try {
+                    //poll()完直接sendRecord()
                     Collection<SourceDataEntry> toSendEntries = sourceTask.poll();
                     if (null != toSendEntries && toSendEntries.size() > 0) {
                         sendRecord(toSendEntries);

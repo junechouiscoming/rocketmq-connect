@@ -75,14 +75,17 @@ public class RebalanceImpl {
 
     /**
      * Distribute connectors and tasks according to the {@link RebalanceImpl#allocateConnAndTaskStrategy}.
+     * 如果一个消费组下面有多个consumer,则可以动态负载均衡分配任务执行，各个节点运行相同的负载均衡算法
      */
     public void doRebalance() {
+        //mz 下面这个getAllAliveWorkers 其实就是 findConsumerIdList(connectConfig.getClusterStoreTopic(), connectConfig.getConnectClusterId()) 其实就是同一topic+group下面的消费者有哪些
         List<String> curAliveWorkers = clusterManagementService.getAllAliveWorkers();
         log.info("Current Alive workers : " + curAliveWorkers.size());
         Map<String, ConnectKeyValue> curConnectorConfigs = configManagementService.getConnectorConfigs();
         log.info("Current ConnectorConfigs : " + curConnectorConfigs);
         Map<String, List<ConnectKeyValue>> curTaskConfigs = configManagementService.getTaskConfigs();
         log.info("Current TaskConfigs : " + curTaskConfigs);
+        //负载均衡结果
         ConnAndTaskConfigs allocateResult = allocateConnAndTaskStrategy.allocate(curAliveWorkers, clusterManagementService.getCurrentWorker(), curConnectorConfigs, curTaskConfigs);
         log.info("Allocated connector:{}", allocateResult.getConnectorConfigs());
         log.info("Allocated task:{}", allocateResult.getTaskConfigs());
@@ -97,6 +100,7 @@ public class RebalanceImpl {
     private void updateProcessConfigsInRebalance(ConnAndTaskConfigs allocateResult) {
 
         try {
+            //worker自己其实早早就已经运行起来了
             worker.startConnectors(allocateResult.getConnectorConfigs(), connectController);
             worker.startTasks(allocateResult.getTaskConfigs());
         } catch (Exception e) {

@@ -34,6 +34,10 @@ import java.nio.charset.Charset;
 import java.nio.charset.CharsetDecoder;
 import java.util.*;
 
+/**
+ *  连接器实例属于逻辑概念，其负责维护特定数据系统的相关配置，比如链接地址、需要同步哪些数据等信息；
+ *  在connector 实例被启动后，connector可以根据配置信息，对解析任务进行拆分，分配出task。这么做的目的是为了提高并行度，提升处理效率
+ */
 public class KafkaSourceTask extends SourceTask {
 
     private static final Logger log = LoggerFactory.getLogger(KafkaSourceTask.class);
@@ -67,6 +71,7 @@ public class KafkaSourceTask extends SourceTask {
                 ByteBuffer sourcePosition = ByteBuffer.allocate(8);
                 sourcePosition.asLongBuffer().put(record.offset());
 
+                //把kafka record构建为dataEntryBuilder
                 DataEntryBuilder dataEntryBuilder = new DataEntryBuilder(schema);
                 dataEntryBuilder.entryType(EntryType.CREATE);
                 dataEntryBuilder.queue(record.topic()); //queueName will be set to RocketMQ topic by runtime
@@ -77,6 +82,8 @@ public class KafkaSourceTask extends SourceTask {
                     dataEntryBuilder.putFiled("key", null);
                 }
                 dataEntryBuilder.putFiled("value", JSON.toJSONString(record.value().array()));
+                //sourcePartition = topic_partition ,即topic+分区
+                //sourcePosition = record.offset()
                 SourceDataEntry entry = dataEntryBuilder.buildSourceDataEntry(sourcePartition, sourcePosition);
                 entries.add(entry);
             }

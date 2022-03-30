@@ -94,6 +94,11 @@ public class ConnectUtil {
         return producer;
     }
 
+    /**
+     * 默认consumerGrp为connector-consumer-group,也就是sinkTask的消费组名称，这个其实是个工具方法，所以不同情况下的消费组名称会重新set的
+     * @param connectConfig
+     * @return
+     */
     public static DefaultMQPullConsumer initDefaultMQPullConsumer(ConnectConfig connectConfig) {
         RPCHook rpcHook = null;
         if (connectConfig.getAclEnable()) {

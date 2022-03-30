@@ -190,6 +190,7 @@ public class WorkerSourceTask implements WorkerTask {
             sourceDataEntry.setSourcePartition(null);
             sourceDataEntry.setSourcePosition(null);
             Message sourceMessage = new Message();
+            //mz 这里的queueName其实是topic名称
             sourceMessage.setTopic(sourceDataEntry.getQueueName());
             if (null == recordConverter || recordConverter instanceof RocketMQConverter) {
                 if (StringUtils.isNotEmpty(sourceDataEntry.getShardingKey())) {

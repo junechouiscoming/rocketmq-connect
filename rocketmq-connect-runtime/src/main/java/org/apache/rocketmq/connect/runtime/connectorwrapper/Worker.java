@@ -144,6 +144,9 @@ public class Worker {
         this.plugin = plugin;
     }
 
+    /**
+     * ConnectController.start()时候会把worker也启动
+     */
     public void start() {
         workerState = new AtomicReference<>(WorkerState.STARTED);
         taskPositionCommitService.start();
@@ -161,14 +164,18 @@ public class Worker {
     public synchronized void startConnectors(Map<String, ConnectKeyValue> connectorConfigs,
                                              ConnectController connectController) throws Exception {
         Set<WorkerConnector> stoppedConnector = new HashSet<>();
+
+        //Current running connectors.
         for (WorkerConnector workerConnector : workingConnectors) {
             String connectorName = workerConnector.getConnectorName();
             ConnectKeyValue keyValue = connectorConfigs.get(connectorName);
+            //TODO mz 显然这里传递 CONFIG_DELETED 参数可以让任务终止
             if (null == keyValue || 0 != keyValue.getInt(RuntimeConfigDefine.CONFIG_DELETED)) {
                 workerConnector.stop();
                 log.info("Connector {} stop", workerConnector.getConnectorName());
                 stoppedConnector.add(workerConnector);
             } else if (!keyValue.equals(workerConnector.getKeyValue())) {
+                //stop then restart
                 workerConnector.reconfigure(keyValue);
             }
         }
@@ -177,9 +184,14 @@ public class Worker {
         if (null == connectorConfigs || 0 == connectorConfigs.size()) {
             return;
         }
+
+        //找出本次新添加的connectors,是判断URL中的connectorName path作为标准的
+        //连接器实例属于逻辑概念，其负责维护特定数据系统的相关配置，比如链接地址、需要同步哪些数据等信息；
+        //在connector 实例被启动后，connector可以根据配置信息，对解析任务进行拆分，分配出task。这么做的目的是为了提高并行度，提升处理效率
         Map<String, ConnectKeyValue> newConnectors = new HashMap<>();
         for (String connectorName : connectorConfigs.keySet()) {
             boolean isNewConnector = true;
+            //workingConnectors只在上面是要stop时候才会remove掉
             for (WorkerConnector workerConnector : workingConnectors) {
                 if (workerConnector.getConnectorName().equals(connectorName)) {
                     isNewConnector = false;
@@ -204,7 +216,9 @@ public class Worker {
             } else {
                 clazz = Class.forName(connectorClass);
             }
+            //这里又new一个实例是为什么？应该是因为可能是读本地配置文件的，并没有调用那个创建connector的rest方法 所以这里还是需要new一个connector出来
             final Connector connector = (Connector) clazz.getDeclaredConstructor().newInstance();
+            //实例化connector包装类
             WorkerConnector workerConnector = new WorkerConnector(connectorName, connector, connectorConfigs.get(connectorName), new DefaultConnectorContext(connectorName, connectController));
             if (isolationFlag) {
                 Plugin.compareAndSwapLoaders(loader);
@@ -213,6 +227,7 @@ public class Worker {
             workerConnector.start();
             log.info("Connector {} start", workerConnector.getConnectorName());
             Plugin.compareAndSwapLoaders(currentThreadLoader);
+            //mz 加入到 Current running connectors 集合中以便运行
             this.workingConnectors.add(workerConnector);
         }
     }
@@ -340,6 +355,7 @@ public class Worker {
                 if (null != keyValues && keyValues.size() > 0) {
                     for (ConnectKeyValue keyValue : keyValues) {
                         if (keyValue.equals(taskConfig)) {
+                            //如果task的配置发生了变更，则需要stop这个task
                             needStop = false;
                             break;
                         }
@@ -389,6 +405,7 @@ public class Worker {
             for (ConnectKeyValue keyValue : newTasks.get(connectorName)) {
                 String taskType = keyValue.getString(RuntimeConfigDefine.TASK_TYPE);
                 if (TaskType.DIRECT.name().equalsIgnoreCase(taskType)) {
+                    //TODO 这个taskType到底干嘛的,看起来是直接把source和sink放在一个task里面直接跑，而且还没有connverter。好像也正常，直接source完然后sink，既然是同一个WorkerDirectTask 好像也确实不需要中间converter转换成字节流
                     createDirectTask(connectorName, keyValue);
                     continue;
                 }
@@ -427,6 +444,7 @@ public class Worker {
                 } else if (task instanceof SinkTask) {
                     DefaultMQPullConsumer consumer = ConnectUtil.initDefaultMQPullConsumer(connectConfig);
                     if (connectConfig.isAutoCreateGroupEnable()) {
+                        //TODO mz 这里我们可以借鉴一下！rocketMQ控制台的创建和使用
                         ConnectUtil.createSubGroup(connectConfig, consumer.getConsumerGroup());
                     }
 
@@ -604,7 +622,9 @@ public class Worker {
             while (!this.isStopped()) {
                 this.waitForRunning(1000);
                 try {
+                    //empty method
                     Worker.this.maintainConnectorState();
+                    //这里会启动task真正执行
                     Worker.this.maintainTaskState();
                 } catch (Exception e) {
                     log.error("RebalanceImpl#StateMachineService start connector or task failed", e);

@@ -121,8 +121,11 @@ public class ConnectController {
         this.configManagementService = new ConfigManagementServiceImpl(connectConfig, plugin);
         this.positionManagementService = new PositionManagementServiceImpl(connectConfig);
         this.offsetManagementService = new OffsetManagementServiceImpl(connectConfig);
+        //创建一个worker
         this.worker = new Worker(connectConfig, positionManagementService, offsetManagementService, plugin);
         AllocateConnAndTaskStrategy strategy = ConnectUtil.initAllocateConnAndTaskStrategy(connectConfig);
+
+        //worker传入到负载均衡中,然后会调用updateProcessConfigsInRebalance进而startConnectors和startTasks
         this.rebalanceImpl = new RebalanceImpl(worker, configManagementService, clusterManagementService, strategy, this);
         this.restHandler = new RestHandler(this);
         this.rebalanceService = new RebalanceService(rebalanceImpl, configManagementService, clusterManagementService);
@@ -141,6 +144,7 @@ public class ConnectController {
         worker.start();
         rebalanceService.start();
 
+        // 持久化到内存或者磁盘的json文件中
         // Persist configurations of current connectors and tasks.
         this.scheduledExecutorService.scheduleAtFixedRate(() -> {
 

@@ -130,13 +130,14 @@ public class RestHandler {
             return;
         }
         log.info("config: {}", arg);
+        //mz 把rest请求中的config请求体解析为map然后转换为ConnectKeyValue格式
         Map keyValue = JSON.parseObject(arg, Map.class);
         ConnectKeyValue configs = new ConnectKeyValue();
         for (Object key : keyValue.keySet()) {
             configs.put((String) key, keyValue.get(key).toString());
         }
         try {
-
+            //mz 创建一个新的connector实例
             String result = connectController.getConfigManagementService().putConnectorConfig(connectorName, configs);
             if (result != null && result.length() > 0) {
                 context.result(result);

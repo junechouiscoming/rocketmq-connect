@@ -50,13 +50,16 @@ public class ConfigManagementServiceImpl implements ConfigManagementService {
 
     /**
      * Current connector configs in the store.
+     * 把connectorName及其对应的config保存在缓存中，这个name就是URL path中指定的connectorName
      */
-    private KeyValueStore<String, ConnectKeyValue> connectorKeyValueStore;
+    private KeyValueStore<String/*connectorName*/, ConnectKeyValue/*config*/> connectorKeyValueStore;
 
     /**
      * Current task configs in the store.
+     * 上面connectorKeyValueStore是connectorName及对应的config
+     * 而这里的taskKeyValueStore是connectorName通过connectorConfig调用getTaskConfig方法又可能拆分出来N个task任务,所以是个List集合
      */
-    private KeyValueStore<String, List<ConnectKeyValue>> taskKeyValueStore;
+    private KeyValueStore<String/*connectorName*/, List<ConnectKeyValue>/*taskConfig*/> taskKeyValueStore;
 
     /**
      * All listeners to trigger while config change.
@@ -153,12 +156,15 @@ public class ConfigManagementServiceImpl implements ConfigManagementService {
 
         Long currentTimestamp = System.currentTimeMillis();
         configs.put(RuntimeConfigDefine.UPDATE_TIMESTAMP, currentTimestamp);
+
+        //mz 检查参数的kv对必须含有必要的某个key例如 connector-class
         for (String requireConfig : RuntimeConfigDefine.REQUEST_CONFIG) {
             if (!configs.containsKey(requireConfig)) {
                 return "Request config key: " + requireConfig;
             }
         }
 
+        //mz 反射实例化connectorClass
         String connectorClass = configs.getString(RuntimeConfigDefine.CONNECTOR_CLASS);
         ClassLoader classLoader = plugin.getPluginClassLoader(connectorClass);
         Class clazz;
@@ -168,11 +174,16 @@ public class ConfigManagementServiceImpl implements ConfigManagementService {
             clazz = Class.forName(connectorClass);
         }
         final Connector connector = (Connector) clazz.getDeclaredConstructor().newInstance();
+
+        //mz 校验并把url参数的config设置到connector中
         String errorMessage = connector.verifyAndSetConfig(configs);
         if (errorMessage != null && errorMessage.length() > 0) {
             return errorMessage;
         }
+        //mz 把connectorName及其对应的config保存在缓存中，这个name就是URL path中指定的connectorName
         connectorKeyValueStore.put(connectorName, configs);
+
+        //mz 重新计算,也就是初始化task
         recomputeTaskConfigs(connectorName, connector, currentTimestamp);
         return "";
     }
@@ -184,6 +195,7 @@ public class ConfigManagementServiceImpl implements ConfigManagementService {
         List<KeyValue> taskConfigs = connector.taskConfigs();
         List<ConnectKeyValue> converterdConfigs = new ArrayList<>();
         for (KeyValue keyValue : taskConfigs) {
+            //mz 外层一次循环就是一个task
             ConnectKeyValue newKeyValue = new ConnectKeyValue();
             for (String key : keyValue.keySet()) {
                 newKeyValue.put(key, keyValue.getString(key));
@@ -197,8 +209,11 @@ public class ConfigManagementServiceImpl implements ConfigManagementService {
             newKeyValue.put(RuntimeConfigDefine.UPDATE_TIMESTAMP, currentTimestamp);
             converterdConfigs.add(newKeyValue);
         }
+        //放到缓存里面
         putTaskConfigs(connectorName, converterdConfigs);
+        //同步config数据到rocketMQ
         sendSynchronizeConfig();
+        //触发监听器，这里会启动task任务
         triggerListener();
     }
 
@@ -278,6 +293,8 @@ public class ConfigManagementServiceImpl implements ConfigManagementService {
         ConnAndTaskConfigs configs = new ConnAndTaskConfigs();
         configs.setConnectorConfigs(connectorKeyValueStore.getKVMap());
         configs.setTaskConfigs(taskKeyValueStore.getKVMap());
+
+        //发送到rocketMQ,topic就是config的那个
         dataSynchronizer.send(ConfigChangeEnum.CONFIG_CHANG_KEY.name(), configs);
     }
 
@@ -287,19 +304,22 @@ public class ConfigManagementServiceImpl implements ConfigManagementService {
         public void onCompletion(Throwable error, String key, ConnAndTaskConfigs result) {
 
             boolean changed = false;
+            //新的configManagementServiceImpl上线即ConfigManagementServiceImpl.start()时候会sendOnline信息,其实body都一样都是自己本地缓存的connectorKeyValueStore和taskKeyValueStore,但是key不一样，key叫做online
+            //其他节点要是收到online信息，就知道别的节点上线了，那么将别的节点的config数据同步过来，然后把自己的config缓存数据发出去和对方进行merge,虽然是集群消费，但是每个节点的workerID不一样也就是groupID不一样，其实就是广播消费模式
             switch (ConfigChangeEnum.valueOf(key)) {
                 case ONLINE_KEY:
                     mergeConfig(result);
                     changed = true;
                     sendSynchronizeConfig();
                     break;
-                case CONFIG_CHANG_KEY:
+                case CONFIG_CHANG_KEY://就是source和sink的config信息。
                     changed = mergeConfig(result);
                     break;
                 default:
                     break;
             }
             if (changed) {
+                //会触发负载均衡
                 triggerListener();
             }
         }

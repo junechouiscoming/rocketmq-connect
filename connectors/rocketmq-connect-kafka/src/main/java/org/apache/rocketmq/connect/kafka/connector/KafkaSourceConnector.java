@@ -28,6 +28,10 @@ import org.slf4j.LoggerFactory;
 import java.util.ArrayList;
 import java.util.List;
 
+/**
+ *  连接器实例属于逻辑概念，其负责维护特定数据系统的相关配置，比如链接地址、需要同步哪些数据等信息；
+ *  在connector 实例被启动后，connector可以根据配置信息，对解析任务进行拆分，分配出task。这么做的目的是为了提高并行度，提升处理效率
+ */
 public class KafkaSourceConnector extends SourceConnector {
     private static final Logger log = LoggerFactory.getLogger(KafkaSourceConnector.class);
 
@@ -45,6 +49,7 @@ public class KafkaSourceConnector extends SourceConnector {
             log.info("connector verifyAndSetConfig: key: {}, value: {}", key, config.getString(key));
         }
 
+        //mz 校验一下必要的key有没有缺失
         for (String requestKey : ConfigDefine.REQUEST_CONFIG) {
             if (!config.containsKey(requestKey)) {
                 return "Request Config key: " + requestKey;

@@ -51,6 +51,10 @@ public class ClusterManagementServiceImpl implements ClusterManagementService {
      */
     private DefaultMQPullConsumer defaultMQPullConsumer;
 
+    /**
+     * 设置自己的消费组名称默认为 DefaultConnectCluster
+     * @param connectConfig
+     */
     public ClusterManagementServiceImpl(ConnectConfig connectConfig) {
         this.connectConfig = connectConfig;
         this.workerStatusListeners = new HashSet<>();
@@ -61,6 +65,7 @@ public class ClusterManagementServiceImpl implements ClusterManagementService {
 
     /**
      * Preparation before startup
+     * rocketMQ控制台上创建消费组
      *
      * @param connectConfig
      */
@@ -102,6 +107,10 @@ public class ClusterManagementServiceImpl implements ClusterManagementService {
             .updateTopicRouteInfoFromNameServer(connectConfig.getClusterStoreTopic());
     }
 
+    /**
+     * 获取connector-cluster-topic的DefaultConnectCluster消费组下的消费者
+     * @return
+     */
     @Override
     public List<String> getAllAliveWorkers() {
         return this.defaultMQPullConsumer.getDefaultMQPullConsumerImpl()
