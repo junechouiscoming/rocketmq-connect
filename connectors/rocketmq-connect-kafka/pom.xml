@@ -120,6 +120,23 @@
                 <artifactId>findbugs-maven-plugin</artifactId>
                 <version>3.0.4</version>
             </plugin>
+            <!--fat jar-->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-shade-plugin</artifactId>
+                <version>2.4.3</version>
+                <configuration>
+                    <!-- put your configurations here -->
+                </configuration>
+                <executions>
+                    <execution>
+                        <phase>package</phase>
+                        <goals>
+                            <goal>shade</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
         </plugins>
     </build>
 
@@ -159,17 +176,20 @@
         <dependency>
             <groupId>io.openmessaging</groupId>
             <artifactId>openmessaging-connector</artifactId>
-            <version>0.1.0-beta</version>
+            <version>0.1.1</version>
+            <scope>provided</scope>
         </dependency>
         <dependency>
             <groupId>io.openmessaging</groupId>
             <artifactId>openmessaging-api</artifactId>
             <version>1.0.0-alpha</version>
+            <scope>provided</scope>
         </dependency>
         <dependency>
             <groupId>org.apache.rocketmq</groupId>
             <artifactId>rocketmq-openmessaging</artifactId>
             <version>4.3.2</version>
+            <scope>provided</scope>
         </dependency>
         <dependency>
             <groupId>com.alibaba</groupId>
@@ -203,3 +223,4 @@
         </dependency>
     </dependencies>
 </project>
+

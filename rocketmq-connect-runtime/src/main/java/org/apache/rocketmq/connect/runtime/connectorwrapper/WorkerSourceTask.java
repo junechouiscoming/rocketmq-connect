@@ -112,16 +112,30 @@ public class WorkerSourceTask implements WorkerTask {
         this.recordConverter = recordConverter;
         this.state = new AtomicReference<>(WorkerTaskState.NEW);
         this.workerState = workerState;
+
+
+        ClassLoader classLoader = Thread.currentThread().getContextClassLoader();
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                Thread.currentThread().setContextClassLoader(classLoader);
+                WorkerSourceTask.this.run2();
+            }
+        }).start();
+    }
+
+    @Override
+    public void run() {
+        System.out.println("do nothing");
     }
 
     /**
      * Start a source task, and send data entry to MQ cyclically.
      */
-    @Override
-    public void run() {
+    public void run2() {
         try {
             producer.start();
-            log.info("Source task producer start.");
+            log.info("Source task producer start."+Thread.currentThread().getName()+" "+Thread.currentThread().getContextClassLoader());
             state.compareAndSet(WorkerTaskState.NEW, WorkerTaskState.PENDING);
             sourceTask.initialize(new SourceTaskContext() {
                 @Override

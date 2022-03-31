@@ -219,15 +219,21 @@ public class Worker {
                 clazz = Class.forName(connectorClass);
             }
             //这里又new一个实例是为什么？应该是因为可能是读本地配置文件的，并没有调用那个创建connector的rest方法 所以这里还是需要new一个connector出来
+
             final Connector connector = (Connector) clazz.getDeclaredConstructor().newInstance();
+
             //实例化connector包装类
+            //java.lang.ClassCastException: org.apache.rocketmq.connect.kafka.connector.KafkaSourceConnector cannot be cast to io.openmessaging.connector.api.Connector
+            //转型失败,应该是因为不是一个类加载器
             WorkerConnector workerConnector = new WorkerConnector(connectorName, connector, connectorConfigs.get(connectorName), new DefaultConnectorContext(connectorName, connectController));
             if (isolationFlag) {
+                //TODO BUG 这里有问题把,当前线程的类加载器替换为pluginClassLoader是对了，但是线程池跑任务还是不对啊
                 Plugin.compareAndSwapLoaders(loader);
             }
             workerConnector.initialize();
             workerConnector.start();
             log.info("Connector {} start", workerConnector.getConnectorName());
+            //再把类加载器替换回去
             Plugin.compareAndSwapLoaders(currentThreadLoader);
             //mz 加入到 Current running connectors 集合中以便运行
             this.workingConnectors.add(workerConnector);

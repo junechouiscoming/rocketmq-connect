@@ -103,7 +103,6 @@ public class Plugin extends URLClassLoader {
         for (Class<? extends T> plugin : plugins) {
             classLoaderMap.put(plugin.getName(), new PluginWrapper(plugin, loader));
             result.add(plugin);
-
         }
         return result;
     }
