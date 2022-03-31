@@ -219,7 +219,7 @@ public class Worker {
                 clazz = Class.forName(connectorClass);
             }
             //这里又new一个实例是为什么？应该是因为可能是读本地配置文件的，并没有调用那个创建connector的rest方法 所以这里还是需要new一个connector出来
-
+            Connector.class.getClassLoader();
             final Connector connector = (Connector) clazz.getDeclaredConstructor().newInstance();
 
             //实例化connector包装类
