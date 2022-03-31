@@ -183,8 +183,10 @@ public class WorkerSourceTask implements WorkerTask {
      */
     private void sendRecord(Collection<SourceDataEntry> sourceDataEntries) {
         for (SourceDataEntry sourceDataEntry : sourceDataEntries) {
+            //这个partition在kafka connect中 = record.topic() + "-" + record.partition()
             ByteBuffer partition = sourceDataEntry.getSourcePartition();
             Optional<ByteBuffer> opartition = Optional.ofNullable(partition);
+            //position在kafka connect中 = record.offset()
             ByteBuffer position = sourceDataEntry.getSourcePosition();
             Optional<ByteBuffer> oposition = Optional.ofNullable(position);
             sourceDataEntry.setSourcePartition(null);
@@ -248,6 +250,9 @@ public class WorkerSourceTask implements WorkerTask {
                         log.info("Successful send message to RocketMQ:{}", result.getMsgId());
                         try {
                             if (null != partition && null != position) {
+                                //对于kafka-connnect这里partition就是topic+分区号,positio就是record的offset
+                                //如果这里发送成功，但是callback因为宕机等没能执行，那么这条消息的位移无法提交，也就是positionManagementService无法提交，
+                                // 那么下次拉取消息已更改还是会从上个位置拉取poll，那么就会造成消息再次投递到rocketMQ导致重复了
                                 positionManagementService.putPosition(partition, position);
                             }
                         } catch (Exception e) {

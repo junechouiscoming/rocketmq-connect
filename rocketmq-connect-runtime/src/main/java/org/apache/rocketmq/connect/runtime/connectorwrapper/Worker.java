@@ -157,7 +157,9 @@ public class Worker {
      * Start a collection of connectors with the given configs. If a connector is already started with the same configs,
      * it will not start again. If a connector is already started but not contained in the new configs, it will stop.
      *
-     * @param connectorConfigs
+     *
+     *
+     * @param connectorConfigs 负载均衡分配给自己的connectorConfigs
      * @param connectController
      * @throws Exception
      */
@@ -334,6 +336,7 @@ public class Worker {
 
         Map<String, List<ConnectKeyValue>> taskConfigs = new HashMap<>();
         synchronized (latestTaskConfigs) {
+            //latestTaskConfigs是负载均衡分配给自己的task列表
             taskConfigs.putAll(latestTaskConfigs);
         }
 

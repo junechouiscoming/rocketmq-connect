@@ -120,6 +120,7 @@ public class ConnectUtil {
         if (connectConfig.getAclEnable()) {
             rpcHook = new AclClientRPCHook(new SessionCredentials(connectConfig.getAccessKey(), connectConfig.getSecretKey()));
         }
+        //没有指定要消费哪个集群，理论上如果一个集群下没有consumer的订阅未创建的话其实也无法消费,而下面createSubGroup创建订阅则考虑了集群
         DefaultMQPushConsumer consumer = new DefaultMQPushConsumer(rpcHook);
         consumer.setNamesrvAddr(connectConfig.getNamesrvAddr());
         consumer.setInstanceName(createUniqInstance(connectConfig.getNamesrvAddr()));
@@ -152,6 +153,8 @@ public class ConnectUtil {
             SubscriptionGroupConfig initConfig = new SubscriptionGroupConfig();
             initConfig.setGroupName(subGroup);
 
+            //根据配置的集群名称，找到集群内所有的master的地址，然后每个master都调用createAndUpdateSubscriptionGroupConfig创建consumer
+            //因为一个nameSrv下可能有多个集群
             Set<String> masterSet = CommandUtil.fetchMasterAddrByClusterName(defaultMQAdminExt, connectConfig.getClusterName());
             for (String addr : masterSet) {
                 defaultMQAdminExt.createAndUpdateSubscriptionGroupConfig(addr, initConfig);

@@ -40,6 +40,7 @@ public class OffsetManagementServiceImpl implements PositionManagementService {
 
     /**
      * Current offset info in store.
+     * 这个store也会在rocketMQ上进行同步和merge的
      */
     private KeyValueStore<ByteBuffer, ByteBuffer> offsetStore;
 

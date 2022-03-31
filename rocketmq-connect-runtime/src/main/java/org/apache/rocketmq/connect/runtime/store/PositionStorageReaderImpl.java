@@ -35,7 +35,7 @@ public class PositionStorageReaderImpl implements PositionStorageReader {
 
     @Override
     public ByteBuffer getPosition(ByteBuffer partition) {
-
+        //这个positionManagementService有2个实现类，一个是position一个是offset
         return positionManagementService.getPositionTable().get(partition);
     }
 

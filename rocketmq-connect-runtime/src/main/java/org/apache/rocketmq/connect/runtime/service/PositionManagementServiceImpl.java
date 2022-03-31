@@ -154,6 +154,11 @@ public class PositionManagementServiceImpl implements PositionManagementService 
     }
 
 
+    /**
+     * positionStore中不是所有的kv都需要同步数据，这里就是只同步needSyncPartition包含的kv
+     * 每send一次，这个needSyncPartition就会清空一次，然后下次再put进来新kv的话这个needSyncPartition就又有值了
+     * 相当于说needSyncPartition就是上次send之后又新增/变化的数据
+     */
     private void sendNeedSynchronizePosition() {
 
         Set<ByteBuffer> needSyncPartitionTmp = needSyncPartition;
@@ -165,6 +170,9 @@ public class PositionManagementServiceImpl implements PositionManagementService 
         dataSynchronizer.send(PositionChangeEnum.POSITION_CHANG_KEY.name(), needSyncPosition);
     }
 
+    /**
+     * 同步整个positionStore的kv
+     */
     private void sendSynchronizePosition() {
 
         dataSynchronizer.send(PositionChangeEnum.POSITION_CHANG_KEY.name(), positionStore.getKVMap());
@@ -178,19 +186,21 @@ public class PositionManagementServiceImpl implements PositionManagementService 
             boolean changed = false;
             switch (PositionChangeEnum.valueOf(key)) {
                 case ONLINE_KEY:
+                    //positionManagementService初次上线
                     changed = true;
                     sendSynchronizePosition();
                     break;
                 case POSITION_CHANG_KEY:
+                    //offset发生变动需要同步
                     changed = mergePositionInfo(result);
                     break;
                 default:
                     break;
             }
             if (changed) {
+                //其实没有任何监听器
                 triggerListener();
             }
-
         }
     }
 
@@ -202,6 +212,10 @@ public class PositionManagementServiceImpl implements PositionManagementService 
 
     /**
      * Merge new received position info with local store.
+     *
+     * 将其他节点的position offset同步到自己的缓存里实现数据同步
+     *
+     * TODO 为什么merge时候不处理needSyncPartition这个变量？因为这是别人给自己同步数据，自己并没有发生变化不需要send出去nnn
      *
      * @param result
      * @return
@@ -218,6 +232,7 @@ public class PositionManagementServiceImpl implements PositionManagementService 
             for (Map.Entry<ByteBuffer, ByteBuffer> existedEntry : positionStore.getKVMap().entrySet()) {
                 if (newEntry.getKey().equals(existedEntry.getKey())) {
                     find = true;
+                    //如果key已经存在，则看看value是否发生变化
                     if (!newEntry.getValue().equals(existedEntry.getValue())) {
                         changed = true;
                         existedEntry.setValue(newEntry.getValue());

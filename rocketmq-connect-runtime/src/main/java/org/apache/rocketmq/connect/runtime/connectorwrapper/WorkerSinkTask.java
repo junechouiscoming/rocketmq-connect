@@ -124,8 +124,11 @@ public class WorkerSinkTask implements WorkerTask {
      */
     private Converter recordConverter;
 
-    private final ConcurrentHashMap<MessageQueue, Long> messageQueuesOffsetMap;
+    private final ConcurrentHashMap<MessageQueue, Long/*下次要消费的位移位置*/> messageQueuesOffsetMap;
 
+    /**
+     * 是否暂停消费
+     */
     private final ConcurrentHashMap<MessageQueue, QueueState> messageQueuesStateMap;
 
     private static final Integer TIMEOUT = 3 * 1000;
@@ -171,6 +174,9 @@ public class WorkerSinkTask implements WorkerTask {
             log.info("Sink task consumer start.");
             state.compareAndSet(WorkerTaskState.NEW, WorkerTaskState.PENDING);
             sinkTask.initialize(new SinkTaskContext() {
+                /**
+                 * Reset the consumer offset for the given queue.
+                 */
                 @Override
                 public void resetOffset(QueueMetaData queueMetaData, Long offset) {
                     String shardingKey = queueMetaData.getShardingKey();
@@ -182,6 +188,7 @@ public class WorkerSinkTask implements WorkerTask {
                             Integer queueId = Integer.valueOf(s[1]);
                             MessageQueue messageQueue = new MessageQueue(queueName, brokerName, queueId);
                             messageQueuesOffsetMap.put(messageQueue, offset);
+                            //放到这里以后,会定时同步到rocketMQ上去
                             offsetManagementService.putPosition(convertToByteBufferKey(messageQueue), convertToByteBufferValue(offset));
                             return;
                         }
@@ -201,6 +208,7 @@ public class WorkerSinkTask implements WorkerTask {
                                 Integer queueId = Integer.valueOf(s[1]);
                                 MessageQueue messageQueue = new MessageQueue(queueName, brokerName, queueId);
                                 messageQueuesOffsetMap.put(messageQueue, entry.getValue());
+                                //放到这里以后,会定时同步到rocketMQ上去
                                 offsetManagementService.putPosition(convertToByteBufferKey(messageQueue), convertToByteBufferValue(entry.getValue()));
                                 continue;
                             }
@@ -209,6 +217,10 @@ public class WorkerSinkTask implements WorkerTask {
                     }
                 }
 
+                /**
+                 * 暂停消费 注意queueMetaData.getShardingKey()的格式是 brokerName,queueID 如 master-1
+                 * @param queueMetaDatas
+                 */
                 @Override
                 public void pause(List<QueueMetaData> queueMetaDatas) {
                     if (null != queueMetaDatas && queueMetaDatas.size() > 0) {
@@ -230,6 +242,10 @@ public class WorkerSinkTask implements WorkerTask {
                     }
                 }
 
+                /**
+                 * 恢复消费
+                 * @param queueMetaDatas
+                 */
                 @Override
                 public void resume(List<QueueMetaData> queueMetaDatas) {
                     if (null != queueMetaDatas && queueMetaDatas.size() > 0) {
@@ -266,12 +282,15 @@ public class WorkerSinkTask implements WorkerTask {
                     final Set<MessageQueue> messageQueues = consumer.fetchSubscribeMessageQueues(topicName);
                     for (MessageQueue messageQueue : messageQueues) {
                         final long offset = consumer.searchOffset(messageQueue, TIMEOUT);
+                        //每个queue的当前消费组的消费位移,这个消费位移是从RocketMQ的角度来看的。
                         messageQueuesOffsetMap.put(messageQueue, offset);
                     }
+                    //一个topic下的所有的queue
                     messageQueues.addAll(messageQueues);
                 }
                 log.debug("{} Initializing and starting task for topicNames {}", this, topicNames);
             } else if (!StringUtils.isEmpty(topicQueuesStr)) {
+                //另一种方式，直接指定要消费的topic和broker和queueid
                 String[] topicQueues = topicQueuesStr.split(SEMICOLON);
                 for (String messageQueueStr : topicQueues) {
                     String[] items = messageQueueStr.split(COMMA);
@@ -279,6 +298,7 @@ public class WorkerSinkTask implements WorkerTask {
                         log.error("Topic queue format error, topicQueueStr : " + topicNamesStr);
                         return;
                     }
+                    //use topicName1, brokerName1, queueId1 can construct {@link MessageQueue}
                     MessageQueue messageQueue = new MessageQueue(items[0], items[1], Integer.valueOf(items[2]));
                     final long offset = consumer.searchOffset(messageQueue, TIMEOUT);
                     messageQueuesOffsetMap.put(messageQueue, offset);
@@ -293,6 +313,9 @@ public class WorkerSinkTask implements WorkerTask {
                 MessageQueue messageQueue = entry.getKey();
                 ByteBuffer byteBuffer = offsetStorageReader.getPosition(convertToByteBufferKey(messageQueue));
                 if (null != byteBuffer) {
+                    //TODO 这里为什么又要把messageQueuesOffsetMap的偏移量覆盖掉呢？
+                    //应该是因为刚刚put的offset是rocketMQ的角度看的，而这里的offset是sink端处理的消费位移，这两个未必一样，所以如果sink处理失败，还是以sink的位移为准咯
+                    //所以应该去sink提交位移的地方看看那里是什么情况
                     messageQueuesOffsetMap.put(messageQueue, convertToOffset(byteBuffer));
                 }
             }
@@ -341,14 +364,20 @@ public class WorkerSinkTask implements WorkerTask {
             log.info("INSIDE pullMessageFromQueues, time elapsed : {}", currentTime - startTimeStamp);
             if (pullResult.getPullStatus().equals(PullStatus.FOUND)) {
                 final List<MessageExt> messages = pullResult.getMsgFoundList();
+                //调用sink.put()进行处理,如果这里抛出异常，那么就下面也不会走了
                 receiveMessages(messages);
+                //更新消费位移
                 messageQueuesOffsetMap.put(entry.getKey(), pullResult.getNextBeginOffset());
+                //放到这个service里面的会同步到rocketMQ上其他节点
                 offsetManagementService.putPosition(convertToByteBufferKey(entry.getKey()), convertToByteBufferValue(pullResult.getNextBeginOffset()));
                 preCommit();
             }
         }
     }
 
+    /**
+     * 其实就是又把messageQueuesOffsetMap的kv包装一下然后达到指定commitInterval间隔就调用一次
+     */
     private void preCommit() {
         long commitInterval = taskConfig.getLong(OFFSET_COMMIT_TIMEOUT_MS_CONFIG, 1000);
         if (nextCommitTime <= 0) {
@@ -365,6 +394,7 @@ public class WorkerSinkTask implements WorkerTask {
                     queueMetaDataLongMap.put(queueMetaData, messageQueueLongEntry.getValue());
                 }
             }
+            //提交位移,对于fileSinkTask而言，这个就是调用一个flush操作。不是很懂为社么需要这一步，直接在上面offsetManagementService.putPosition不就已经commit了吗
             sinkTask.preCommit(queueMetaDataLongMap);
             nextCommitTime = 0;
         }

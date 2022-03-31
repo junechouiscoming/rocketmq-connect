@@ -56,7 +56,7 @@ public class DefaultAllocateConnAndTaskStrategy implements AllocateConnAndTaskSt
             index++;
             if (!curWorker.equals(allocatedWorker)) {
                 continue;
-            }
+            }//只挑出来那些分给自己的任务
             allocateResult.getConnectorConfigs().put(connectorName, sortedConnectorConfigs.get(connectorName));
         }
         for (String connectorName : sortedTaskConfigs.keySet()) {

@@ -180,6 +180,13 @@ public class KafkaSourceTask extends SourceTask {
         return null;
     }
 
+    /**
+     * 这里提交kafka偏移量，只提交发rocketMQ发送成功收到回调success的那些消息，也就是说消费位移是context.positionStorageReader()读出来的
+     * 其实就是 positionManagementService.getPositionTable().get(partition) ，而这个positionManagementService就是在rocketMQ消息发出去收到回调才会put进去
+     * 而且这个提交位移好像不是定时提交，只在stop和发生重平衡才会提交位移。这个问题不是会很大吗。不会,已经 ENABLE_AUTO_COMMIT_CONFIG 也就是自动你提交参数打开了
+     * @param tpList
+     * @param isClose
+     */
     private void commitOffset(Collection<TopicPartition> tpList, boolean isClose) {
 
         if(tpList == null || tpList.isEmpty())
@@ -243,6 +250,10 @@ public class KafkaSourceTask extends SourceTask {
             }
         }
 
+        /**
+         * 当kafka分区不再分配给自己的时候，需要提交kafka的消费位移
+         * @param partitions
+         */
         @Override
         public void onPartitionsRevoked(Collection<TopicPartition> partitions) {
 
