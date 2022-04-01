@@ -46,6 +46,7 @@ import org.apache.rocketmq.connect.runtime.config.RuntimeConfigDefine;
 import org.apache.rocketmq.connect.runtime.converter.RocketMQConverter;
 import org.apache.rocketmq.connect.runtime.service.PositionManagementService;
 import org.apache.rocketmq.connect.runtime.store.PositionStorageReaderImpl;
+import org.apache.rocketmq.connect.runtime.utils.Plugin;
 import org.apache.rocketmq.remoting.exception.RemotingException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -96,13 +97,19 @@ public class WorkerSourceTask implements WorkerTask {
 
     private final AtomicReference<WorkerState> workerState;
 
+    private final ClassLoader classLoader;
+
+    /**
+     * @param classLoader pluginClassLoader或者appClassLoader
+     */
     public WorkerSourceTask(String connectorName,
         SourceTask sourceTask,
         ConnectKeyValue taskConfig,
         PositionManagementService positionManagementService,
         Converter recordConverter,
         DefaultMQProducer producer,
-        AtomicReference<WorkerState> workerState) {
+        AtomicReference<WorkerState> workerState,
+        ClassLoader classLoader) {
         this.connectorName = connectorName;
         this.sourceTask = sourceTask;
         this.taskConfig = taskConfig;
@@ -112,30 +119,29 @@ public class WorkerSourceTask implements WorkerTask {
         this.recordConverter = recordConverter;
         this.state = new AtomicReference<>(WorkerTaskState.NEW);
         this.workerState = workerState;
-
-
-        ClassLoader classLoader = Thread.currentThread().getContextClassLoader();
-        new Thread(new Runnable() {
-            @Override
-            public void run() {
-                Thread.currentThread().setContextClassLoader(classLoader);
-                WorkerSourceTask.this.run2();
-            }
-        }).start();
+        this.classLoader = classLoader;
     }
-
-    @Override
-    public void run() {
-        System.out.println("do nothing");
+    public WorkerSourceTask(String connectorName,
+                            SourceTask sourceTask,
+                            ConnectKeyValue taskConfig,
+                            PositionManagementService positionManagementService,
+                            Converter recordConverter,
+                            DefaultMQProducer producer,
+                            AtomicReference<WorkerState> workerState){
+        this(connectorName,sourceTask,taskConfig,positionManagementService,recordConverter,producer,workerState,Thread.currentThread().getContextClassLoader());
     }
-
     /**
      * Start a source task, and send data entry to MQ cyclically.
      */
-    public void run2() {
+    @Override
+    public void run() {
+        ClassLoader currentLoader = Thread.currentThread().getContextClassLoader();
         try {
+            //线程运行时候,类加载器必须得设置为pluginClassLoader,否则下面的sourceTask跑不起来
+            //对于其他代码应该是无影响的，因为pluginClassLoader的父类加载器是appClassLoader
+            Plugin.compareAndSwapLoaders(classLoader);
             producer.start();
-            log.info("Source task producer start."+Thread.currentThread().getName()+" "+Thread.currentThread().getContextClassLoader());
+            log.info("Source task producer start."+Thread.currentThread().getName()+" "+ currentLoader);
             state.compareAndSet(WorkerTaskState.NEW, WorkerTaskState.PENDING);
             sourceTask.initialize(new SourceTaskContext() {
                 @Override
@@ -173,6 +179,7 @@ public class WorkerSourceTask implements WorkerTask {
                 producer.shutdown();
                 log.info("Source task producer shutdown.");
             }
+            Plugin.compareAndSwapLoaders(currentLoader);
         }
     }
 

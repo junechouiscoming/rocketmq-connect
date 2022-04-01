@@ -61,7 +61,12 @@ public class RebalanceService extends ServiceThread {
         while (!this.isStopped()) {
 
             this.waitForRunning(waitInterval);
-            this.rebalanceImpl.doRebalance();
+            try {
+                this.rebalanceImpl.doRebalance();
+            } catch (Exception e) {
+                log.error("this.rebalanceImpl.doRebalance() failed",e);
+                e.printStackTrace();
+            }
         }
 
         log.info(this.getServiceName() + " service end");

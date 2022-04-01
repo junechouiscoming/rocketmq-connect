@@ -134,6 +134,7 @@ public class Worker {
                   PositionManagementService positionManagementService, PositionManagementService offsetManagementService,
                   Plugin plugin) {
         this.connectConfig = connectConfig;
+        //这里这个cached很重要 因为task基本都是要永久运行
         this.taskExecutor = Executors.newCachedThreadPool(new DefaultThreadFactory("task-Worker-Executor-"));
         this.positionManagementService = positionManagementService;
         this.offsetManagementService = offsetManagementService;
@@ -219,7 +220,6 @@ public class Worker {
                 clazz = Class.forName(connectorClass);
             }
             //这里又new一个实例是为什么？应该是因为可能是读本地配置文件的，并没有调用那个创建connector的rest方法 所以这里还是需要new一个connector出来
-            Connector.class.getClassLoader();
             final Connector connector = (Connector) clazz.getDeclaredConstructor().newInstance();
 
             //实例化connector包装类
@@ -227,7 +227,6 @@ public class Worker {
             //转型失败,应该是因为不是一个类加载器
             WorkerConnector workerConnector = new WorkerConnector(connectorName, connector, connectorConfigs.get(connectorName), new DefaultConnectorContext(connectorName, connectController));
             if (isolationFlag) {
-                //TODO BUG 这里有问题把,当前线程的类加载器替换为pluginClassLoader是对了，但是线程池跑任务还是不对啊
                 Plugin.compareAndSwapLoaders(loader);
             }
             workerConnector.initialize();
@@ -443,10 +442,12 @@ public class Worker {
                 if (task instanceof SourceTask) {
                     DefaultMQProducer producer = ConnectUtil.initDefaultMQProducer(connectConfig);
 
+                    //必须保证提交到线程池之前，这里的类加载动作就全部完成。否线程池的类加载器是appClassLoader
                     WorkerSourceTask workerSourceTask = new WorkerSourceTask(connectorName,
-                        (SourceTask) task, keyValue, positionManagementService, recordConverter, producer, workerState);
+                        (SourceTask) task, keyValue, positionManagementService, recordConverter, producer, workerState,isolationFlag?loader:currentThreadLoader);
                     Plugin.compareAndSwapLoaders(currentThreadLoader);
 
+                    //这里没办法用线程池
                     Future future = taskExecutor.submit(workerSourceTask);
                     taskToFutureMap.put(workerSourceTask, future);
                     this.pendingTasks.put(workerSourceTask, System.currentTimeMillis());

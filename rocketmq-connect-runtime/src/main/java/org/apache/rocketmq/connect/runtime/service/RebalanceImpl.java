@@ -80,6 +80,9 @@ public class RebalanceImpl {
     public void doRebalance() {
         //mz 下面这个getAllAliveWorkers 其实就是 findConsumerIdList(connectConfig.getClusterStoreTopic(), connectConfig.getConnectClusterId()) 其实就是同一topic+group下面的消费者有哪些
         List<String> curAliveWorkers = clusterManagementService.getAllAliveWorkers();
+        if (curAliveWorkers==null && clusterManagementService.hasClusterStoreTopic()) {
+            log.error("clusterStoreTopic may not exist in rocketMQ,please create it first,the topic default name is '%s'","connector-cluster-topic");
+        }
         log.info("Current Alive workers : " + curAliveWorkers.size());
         Map<String, ConnectKeyValue> curConnectorConfigs = configManagementService.getConnectorConfigs();
         log.info("Current ConnectorConfigs : " + curConnectorConfigs);

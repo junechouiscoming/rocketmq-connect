@@ -37,6 +37,7 @@ import java.util.*;
 /**
  *  连接器实例属于逻辑概念，其负责维护特定数据系统的相关配置，比如链接地址、需要同步哪些数据等信息；
  *  在connector 实例被启动后，connector可以根据配置信息，对解析任务进行拆分，分配出task。这么做的目的是为了提高并行度，提升处理效率
+ *  注意因为类加载器的缘故，基本上这里都不允许异步的方法
  */
 public class KafkaSourceTask extends SourceTask {
 
