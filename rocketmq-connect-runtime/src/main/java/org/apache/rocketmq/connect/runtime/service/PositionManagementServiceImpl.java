@@ -17,12 +17,18 @@
 
 package org.apache.rocketmq.connect.runtime.service;
 
+import com.alibaba.fastjson.JSON;
+import com.alibaba.fastjson.TypeReference;
+import com.alibaba.fastjson.serializer.SerializerFeature;
+import com.google.common.primitives.Longs;
 import io.netty.util.internal.ConcurrentSet;
 import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Collectors;
 import org.apache.rocketmq.connect.runtime.config.ConnectConfig;
 import org.apache.rocketmq.connect.runtime.converter.ByteBufferConverter;
@@ -61,10 +67,33 @@ public class PositionManagementServiceImpl implements PositionManagementService 
     private final String positionManagePrefix = "PositionManage";
 
     public PositionManagementServiceImpl(ConnectConfig connectConfig) {
+        this.positionStore = new FileBaseKeyValueStore<ByteBuffer,ByteBuffer>(
+                FilePathConfigUtil.getPositionPath(connectConfig.getStorePathRootDir()),
+                new TypeReference<Map<ByteBuffer,ByteBuffer>>() {}){
+            @Override
+            protected Map<ByteBuffer,ByteBuffer> decode(String jsonString) {
+                Map<String, String> map = JSON.parseObject(jsonString, new TypeReference<ConcurrentHashMap<String, String>>() {});
+                Map<ByteBuffer, ByteBuffer> returnMap = new ConcurrentHashMap<>();
+                map.entrySet().stream().forEach(e->{
+                    if (e.getKey()!=null && e.getValue()!=null) {
+                        returnMap.put(ByteBuffer.wrap(e.getKey().getBytes(StandardCharsets.UTF_8)),ByteBuffer.wrap(e.getValue().getBytes(StandardCharsets.UTF_8)));
+                    }
+                });
+                return returnMap;
+            }
 
-        this.positionStore = new FileBaseKeyValueStore<>(FilePathConfigUtil.getPositionPath(connectConfig.getStorePathRootDir()),
-            new ByteBufferConverter(),
-            new ByteBufferConverter());
+            @Override
+            protected String encode(Map<ByteBuffer,ByteBuffer> data) {
+                Map<String, String> offsetMap = new ConcurrentHashMap<>();
+                data.entrySet().stream().forEach(e->{
+                    if (e.getValue().hasArray() && e.getValue().array() != null) {
+                        offsetMap.put(new String(e.getKey().array()),new String(e.getValue().array()));
+                    }
+                });
+                return JSON.toJSONString(offsetMap, SerializerFeature.PrettyFormat);
+            }
+        };
+
         this.dataSynchronizer = new BrokerBasedLog(connectConfig,
             connectConfig.getPositionStoreTopic(),
             ConnectUtil.createGroupName(positionManagePrefix, connectConfig.getWorkerId()),
@@ -220,7 +249,7 @@ public class PositionManagementServiceImpl implements PositionManagementService 
      * @param result
      * @return
      */
-    private boolean mergePositionInfo(Map<ByteBuffer, ByteBuffer> result) {
+    private synchronized boolean mergePositionInfo(Map<ByteBuffer, ByteBuffer> result) {
 
         boolean changed = false;
         if (null == result || 0 == result.size()) {

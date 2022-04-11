@@ -121,7 +121,8 @@ public class PluginUtils {
         .Filter<Path>() {
         @Override
         public boolean accept(Path path) {
-            return Files.isDirectory(path) || isArchive(path) || isClassFile(path);
+            // -sources.jar 结尾的也会skip掉
+            return (Files.isDirectory(path) || isArchive(path) || isClassFile(path)) && !path.getFileName().toString().endsWith("-sources.jar");
         }
     };
 

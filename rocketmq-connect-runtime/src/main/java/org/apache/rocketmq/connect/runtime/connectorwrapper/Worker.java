@@ -18,42 +18,30 @@
 package org.apache.rocketmq.connect.runtime.connectorwrapper;
 
 import io.netty.util.concurrent.DefaultThreadFactory;
-import io.netty.util.internal.ConcurrentSet;
-import io.openmessaging.connector.api.Connector;
 import io.openmessaging.connector.api.Task;
 import io.openmessaging.connector.api.data.Converter;
 import io.openmessaging.connector.api.sink.SinkTask;
 import io.openmessaging.connector.api.source.SourceTask;
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.HashSet;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
-import java.util.concurrent.CancellationException;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ExecutionException;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.Future;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.TimeoutException;
+import java.util.*;
+import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.stream.Collectors;
+
+import org.apache.commons.collections.CollectionUtils;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.rocketmq.client.consumer.DefaultMQPullConsumer;
 import org.apache.rocketmq.client.producer.DefaultMQProducer;
-import org.apache.rocketmq.connect.runtime.ConnectController;
 import org.apache.rocketmq.connect.runtime.common.ConnectKeyValue;
 import org.apache.rocketmq.connect.runtime.common.LoggerName;
 import org.apache.rocketmq.connect.runtime.config.ConnectConfig;
 import org.apache.rocketmq.connect.runtime.config.RuntimeConfigDefine;
-import org.apache.rocketmq.connect.runtime.service.DefaultConnectorContext;
 import org.apache.rocketmq.connect.runtime.service.PositionManagementService;
 import org.apache.rocketmq.connect.runtime.service.TaskPositionCommitService;
 import org.apache.rocketmq.connect.runtime.utils.ConnectUtil;
 import org.apache.rocketmq.connect.runtime.utils.Plugin;
 import org.apache.rocketmq.connect.runtime.utils.PluginClassLoader;
 import org.apache.rocketmq.connect.runtime.utils.ServiceThread;
+import org.jetbrains.annotations.NotNull;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -62,37 +50,25 @@ import org.slf4j.LoggerFactory;
  */
 public class Worker {
     private static final Logger log = LoggerFactory.getLogger(LoggerName.ROCKETMQ_RUNTIME);
-
     /**
-     * Current running connectors.
+     * 负载均衡当前时刻这一秒钟分配给自己的task列表
      */
-    private Set<WorkerConnector> workingConnectors = new ConcurrentSet<>();
-
+    private Map<String, List<ConnectKeyValue>> nowAllocatedTaskConfigs = new ConcurrentHashMap<>();
     /**
-     * Current running tasks.
+     * 上次mainTaskState时候task列表的快照
      */
-    private Map<Runnable, Long/*timestamp*/> pendingTasks = new ConcurrentHashMap<>();
+    private Map<String, List<ConnectKeyValue>> lastMaintainTaskConfigsSnapshot = new ConcurrentHashMap<>();
 
-    private Set<Runnable> runningTasks = new ConcurrentSet<>();
-
-    private Set<Runnable> errorTasks = new ConcurrentSet<>();
-
-    private Set<Runnable> cleanedErrorTasks = new ConcurrentSet<>();
-
-    private Map<Runnable, Long/*timestamp*/> stoppingTasks = new ConcurrentHashMap<>();
-
-    private Set<Runnable> stoppedTasks = new ConcurrentSet<>();
-
-    private Set<Runnable> cleanedStoppedTasks = new ConcurrentSet<>();
-
-
-    Map<String, List<ConnectKeyValue>> latestTaskConfigs = new HashMap<>();
     /**
-     * Current running tasks to its Future map.
+     * Current tasks to its Future map 参见currentEpochWorkerTaskMap,这里面这个里面的任务状态不定，可能已经stop或者error或者running等，保证里面是本次任务维护开始时刻仅包含当时负载均衡结果的task的集合
      */
     private Map<Runnable, Future> taskToFutureMap = new ConcurrentHashMap<>();
 
-
+    /**
+     * 当前maintainTaskState epoch的task集合。
+     * 每次调度维护任务状态都会动态增删其中的task，保证里面是本次任务维护开始时刻仅包含当时负载均衡结果的task的集合。这个里面的任务状态不定，可能已经stop或者error或者running等
+     */
+    private Map<ConnectKeyValueWrapper, WorkerTask> currentEpochWorkerTaskMap = new ConcurrentHashMap<>();
 
     /**
      * Thread pool for connectors and tasks.
@@ -118,15 +94,10 @@ public class Worker {
 
     private final Plugin plugin;
 
-    private  static final int MAX_START_TIMEOUT_MILLS = 5000;
-
-    private  static final long MAX_STOP_TIMEOUT_MILLS = 20000;
-
     /**
      * Atomic state variable
      */
     private AtomicReference<WorkerState> workerState;
-
 
     private StateMachineService stateMachineService = new StateMachineService();
 
@@ -135,7 +106,7 @@ public class Worker {
                   Plugin plugin) {
         this.connectConfig = connectConfig;
         //这里这个cached很重要 因为task基本都是要永久运行
-        this.taskExecutor = Executors.newCachedThreadPool(new DefaultThreadFactory("task-Worker-Executor-"));
+        this.taskExecutor = Executors.newCachedThreadPool(new DefaultThreadFactory("WorkTask-Executor-"));
         this.positionManagementService = positionManagementService;
         this.offsetManagementService = offsetManagementService;
         this.taskPositionCommitService = new TaskPositionCommitService(
@@ -154,121 +125,19 @@ public class Worker {
         stateMachineService.start();
     }
 
-    /**
-     * Start a collection of connectors with the given configs. If a connector is already started with the same configs,
-     * it will not start again. If a connector is already started but not contained in the new configs, it will stop.
-     *
-     *
-     *
-     * @param connectorConfigs 负载均衡分配给自己的connectorConfigs
-     * @param connectController
-     * @throws Exception
-     */
-    public synchronized void startConnectors(Map<String, ConnectKeyValue> connectorConfigs,
-                                             ConnectController connectController) throws Exception {
-        Set<WorkerConnector> stoppedConnector = new HashSet<>();
 
-        //Current running connectors.
-        for (WorkerConnector workerConnector : workingConnectors) {
-            String connectorName = workerConnector.getConnectorName();
-            ConnectKeyValue keyValue = connectorConfigs.get(connectorName);
-            //TODO mz 显然这里传递 CONFIG_DELETED 参数可以让任务终止
-            if (null == keyValue || 0 != keyValue.getInt(RuntimeConfigDefine.CONFIG_DELETED)) {
-                workerConnector.stop();
-                log.info("Connector {} stop", workerConnector.getConnectorName());
-                stoppedConnector.add(workerConnector);
-            } else if (!keyValue.equals(workerConnector.getKeyValue())) {
-                //stop then restart
-                workerConnector.reconfigure(keyValue);
-            }
+    public Map<String, List<ConnectKeyValue>> getTasks() {
+        synchronized (nowAllocatedTaskConfigs){
+            return new HashMap<>(nowAllocatedTaskConfigs);
         }
-        workingConnectors.removeAll(stoppedConnector);
-
-        if (null == connectorConfigs || 0 == connectorConfigs.size()) {
-            return;
-        }
-
-        //找出本次新添加的connectors,是判断URL中的connectorName path作为标准的
-        //连接器实例属于逻辑概念，其负责维护特定数据系统的相关配置，比如链接地址、需要同步哪些数据等信息；
-        //在connector 实例被启动后，connector可以根据配置信息，对解析任务进行拆分，分配出task。这么做的目的是为了提高并行度，提升处理效率
-        Map<String, ConnectKeyValue> newConnectors = new HashMap<>();
-        for (String connectorName : connectorConfigs.keySet()) {
-            boolean isNewConnector = true;
-            //workingConnectors只在上面是要stop时候才会remove掉
-            for (WorkerConnector workerConnector : workingConnectors) {
-                if (workerConnector.getConnectorName().equals(connectorName)) {
-                    isNewConnector = false;
-                    break;
-                }
-            }
-            if (isNewConnector) {
-                newConnectors.put(connectorName, connectorConfigs.get(connectorName));
-            }
-        }
-
-        for (String connectorName : newConnectors.keySet()) {
-            ConnectKeyValue keyValue = newConnectors.get(connectorName);
-            String connectorClass = keyValue.getString(RuntimeConfigDefine.CONNECTOR_CLASS);
-            ClassLoader loader = plugin.getPluginClassLoader(connectorClass);
-            final ClassLoader currentThreadLoader = plugin.currentThreadLoader();
-            Class clazz;
-            boolean isolationFlag = false;
-            if (loader instanceof PluginClassLoader) {
-                clazz = ((PluginClassLoader) loader).loadClass(connectorClass, false);
-                isolationFlag = true;
-            } else {
-                clazz = Class.forName(connectorClass);
-            }
-            //这里又new一个实例是为什么？应该是因为可能是读本地配置文件的，并没有调用那个创建connector的rest方法 所以这里还是需要new一个connector出来
-            final Connector connector = (Connector) clazz.getDeclaredConstructor().newInstance();
-
-            //实例化connector包装类
-            //java.lang.ClassCastException: org.apache.rocketmq.connect.kafka.connector.KafkaSourceConnector cannot be cast to io.openmessaging.connector.api.Connector
-            //转型失败,应该是因为不是一个类加载器
-            WorkerConnector workerConnector = new WorkerConnector(connectorName, connector, connectorConfigs.get(connectorName), new DefaultConnectorContext(connectorName, connectController));
-            if (isolationFlag) {
-                Plugin.compareAndSwapLoaders(loader);
-            }
-            workerConnector.initialize();
-            workerConnector.start();
-            log.info("Connector {} start", workerConnector.getConnectorName());
-            //再把类加载器替换回去
-            Plugin.compareAndSwapLoaders(currentThreadLoader);
-            //mz 加入到 Current running connectors 集合中以便运行
-            this.workingConnectors.add(workerConnector);
+    }
+    public void setTasks(Map<String, List<ConnectKeyValue>> taskConfigs) {
+        synchronized (nowAllocatedTaskConfigs) {
+            this.nowAllocatedTaskConfigs.clear();
+            this.nowAllocatedTaskConfigs.putAll(taskConfigs);
         }
     }
 
-    /**
-     * Start a collection of tasks with the given configs. If a task is already started with the same configs, it will
-     * not start again. If a task is already started but not contained in the new configs, it will stop.
-     *
-     * @param taskConfigs
-     * @throws Exception
-     */
-    public void startTasks(Map<String, List<ConnectKeyValue>> taskConfigs) {
-        synchronized (latestTaskConfigs) {
-            this.latestTaskConfigs = taskConfigs;
-        }
-    }
-
-
-    private boolean isConfigInSet(ConnectKeyValue keyValue, Set<Runnable> set) {
-        for (Runnable runnable : set) {
-            ConnectKeyValue taskConfig = null;
-            if (runnable instanceof WorkerSourceTask) {
-                taskConfig = ((WorkerSourceTask) runnable).getTaskConfig();
-            } else if (runnable instanceof WorkerSinkTask) {
-                taskConfig = ((WorkerSinkTask) runnable).getTaskConfig();
-            } else if (runnable instanceof WorkerDirectTask) {
-                taskConfig = ((WorkerDirectTask) runnable).getTaskConfig();
-            }
-            if (keyValue.equals(taskConfig)) {
-                return true;
-            }
-        }
-        return false;
-    }
 
     /**
      * We can choose to persist in-memory task status
@@ -276,352 +145,285 @@ public class Worker {
      */
     public void stop() {
         workerState.set(WorkerState.TERMINATED);
-        try {
-            taskExecutor.awaitTermination(5000, TimeUnit.MILLISECONDS);
-        } catch (InterruptedException e) {
-            log.error("Task termination error.", e);
-        }
         stateMachineService.shutdown();
+        while (getWorkingTasks().size()>0){
+            try {
+                log.info("waiting all task to stopped to commit all task position....");
+                Thread.sleep(500);
+            } catch (InterruptedException e) {
+                e.printStackTrace();
+            }
+        }
     }
 
-    public Set<WorkerConnector> getWorkingConnectors() {
-        return workingConnectors;
+    public Set<WorkerTask> getWorkingTasks() {
+        Collection<WorkerTask> values = currentEpochWorkerTaskMap.values();
+        Set<WorkerTask> tasks = values.stream().filter(workerTask -> workerTask.getState() == WorkerTaskState.RUNNING).collect(Collectors.toSet());
+        return tasks;
     }
 
-    public void setWorkingConnectors(
-            Set<WorkerConnector> workingConnectors) {
-        this.workingConnectors = workingConnectors;
+    public Set<WorkerTask> getErrorTasks() {
+        Collection<WorkerTask> values = currentEpochWorkerTaskMap.values();
+        Set<WorkerTask> tasks = values.stream().filter(workerTask -> workerTask.getState() == WorkerTaskState.ERROR).collect(Collectors.toSet());
+        return tasks;
     }
 
-
-    /**
-     * Beaware that we are not creating a defensive copy of these tasks
-     * So developers should only use these references for read-only purposes.
-     * These variables should be immutable
-     * @return
-     */
-    public Set<Runnable> getWorkingTasks() {
-        return runningTasks;
+    public Set<WorkerTask> getPendingTasks() {
+        Collection<WorkerTask> values = currentEpochWorkerTaskMap.values();
+        Set<WorkerTask> tasks = values.stream().filter(workerTask -> workerTask.getState() == WorkerTaskState.PENDING).collect(Collectors.toSet());
+        return tasks;
     }
 
-    public Set<Runnable> getErrorTasks() {
-        return errorTasks;
+    public Set<WorkerTask> getStoppingTasks() {
+        Collection<WorkerTask> values = currentEpochWorkerTaskMap.values();
+        Set<WorkerTask> tasks = values.stream().filter(workerTask -> workerTask.getState() == WorkerTaskState.STOPPING).collect(Collectors.toSet());
+        return tasks;
     }
 
-    public Set<Runnable> getPendingTasks() {
-        return pendingTasks.keySet();
+    public Set<WorkerTask> getStoppedTasks() {
+        Collection<WorkerTask> values = currentEpochWorkerTaskMap.values();
+        Set<WorkerTask> tasks = values.stream().filter(workerTask -> workerTask.getState() == WorkerTaskState.STOPPED).collect(Collectors.toSet());
+        return tasks;
     }
-
-    public Set<Runnable> getStoppedTasks() {
-        return stoppedTasks;
-    }
-
-    public Set<Runnable> getStoppingTasks() {
-        return stoppingTasks.keySet();
-    }
-
-    public Set<Runnable> getCleanedErrorTasks() {
-        return cleanedErrorTasks;
-    }
-
-    public Set<Runnable> getCleanedStoppedTasks() {
-        return cleanedStoppedTasks;
-    }
-
-    public void setWorkingTasks(Set<Runnable> workingTasks) {
-        this.runningTasks = workingTasks;
-    }
-
 
     public void maintainConnectorState() {
 
     }
 
-    public void maintainTaskState() throws Exception {
+    public static void main(String[] args) {
+        Map<String, List<ConnectKeyValue>> left = new ConcurrentHashMap<>();
+        Map<String, List<ConnectKeyValue>> right = new ConcurrentHashMap<>();
 
-        Map<String, List<ConnectKeyValue>> taskConfigs = new HashMap<>();
-        synchronized (latestTaskConfigs) {
+
+        left.put("1", Arrays.asList(new ConnectKeyValue(),new ConnectKeyValue(),new ConnectKeyValue()));
+        ConnectKeyValue connectKeyValue = new ConnectKeyValue();
+        connectKeyValue.put("a", "a");
+        left.put("2", Arrays.asList(connectKeyValue,new ConnectKeyValue(),new ConnectKeyValue()));//
+        left.put("3", Arrays.asList(new ConnectKeyValue(),new ConnectKeyValue(),new ConnectKeyValue()));
+
+
+        ConnectKeyValue connectKeyValue2 = new ConnectKeyValue();
+        connectKeyValue2.put("a", "a");
+        right.put("3", Arrays.asList(connectKeyValue2,new ConnectKeyValue(),new ConnectKeyValue()));//
+        right.put("4", Arrays.asList(new ConnectKeyValue(),new ConnectKeyValue(),new ConnectKeyValue()));
+
+        //上次本次都存在的一些task
+        Map<String, List<ConnectKeyValue>> inCommon = difference(left,right,0);
+        //上次存在，但是本次不存在的一些task
+        Map<String, List<ConnectKeyValue>> onlyOnLeft = difference(left,right,1);
+        //上次不存在，但是本次存在的一些task
+        Map<String, List<ConnectKeyValue>> onlyOnRight = difference(left,right,2);
+
+        System.out.println(inCommon);
+        System.out.println(onlyOnLeft);
+        System.out.println(onlyOnRight);
+    }
+
+    /**
+     * myself
+     */
+    public void maintainTaskState() throws ExecutionException, InterruptedException {
+
+        //confirm task list
+        Map<String, List<ConnectKeyValue>> newTaskConfigs = new HashMap<>();
+        synchronized (nowAllocatedTaskConfigs) {
             //latestTaskConfigs是负载均衡分配给自己的task列表
-            taskConfigs.putAll(latestTaskConfigs);
+            newTaskConfigs.putAll(nowAllocatedTaskConfigs);
         }
-
-        boolean needCommitPosition = false;
-        //  STEP 1: check running tasks and put to error status
-        for (Runnable runnable : runningTasks) {
-            WorkerTask workerTask = (WorkerTask) runnable;
-            String connectorName = workerTask.getConnectorName();
-            ConnectKeyValue taskConfig = workerTask.getTaskConfig();
-            List<ConnectKeyValue> keyValues = taskConfigs.get(connectorName);
-            WorkerTaskState state = ((WorkerTask) runnable).getState();
+        Map<String, List<ConnectKeyValue>> lastTaskConfigsSnapshot = new HashMap<>(this.lastMaintainTaskConfigsSnapshot);
+        lastMaintainTaskConfigsSnapshot = new ConcurrentHashMap<>(newTaskConfigs);
 
 
-            if (WorkerTaskState.ERROR == state) {
-                errorTasks.add(runnable);
-                runningTasks.remove(runnable);
-            } else if (WorkerTaskState.RUNNING == state) {
-                boolean needStop = true;
-                if (null != keyValues && keyValues.size() > 0) {
-                    for (ConnectKeyValue keyValue : keyValues) {
-                        if (keyValue.equals(taskConfig)) {
-                            //如果task的配置发生了变更，则需要stop这个task
-                            needStop = false;
-                            break;
-                        }
+        //上次本次都存在的一些task
+        Map<String, List<ConnectKeyValue>> inCommon = difference(lastTaskConfigsSnapshot,newTaskConfigs,0);
+        //上次存在，但是本次不存在的一些task
+        Map<String, List<ConnectKeyValue>> inRemove = difference(lastTaskConfigsSnapshot,newTaskConfigs,1);
+        //上次不存在，但是本次存在的一些task
+        Map<String, List<ConnectKeyValue>> inAdd = difference(lastTaskConfigsSnapshot,newTaskConfigs,2);
+
+        for (Map.Entry<String, List<ConnectKeyValue>> entry : inCommon.entrySet()) {
+            for (ConnectKeyValue connectKeyValue : entry.getValue()) {
+                WorkerTask workerTask = currentEpochWorkerTaskMap.get(ConnectKeyValueWrapper.wrap(connectKeyValue));
+                List<ConnectKeyValue> newKVLst = newTaskConfigs.get(entry.getKey());
+                for (ConnectKeyValue newKV : newKVLst) {
+                    String uid = newKV.getString(RuntimeConfigDefine.TASK_UID);
+                    if(uid.equals(workerTask.getTaskConfig().getString(RuntimeConfigDefine.TASK_UID))){
+                        //替换成新的,主要是因为动态增加任务数量时,虽然UID和其他的一些配置没变,但是TASK-ID却变了
+                        workerTask.getTaskConfig().setProperties(newKV.getProperties());
                     }
                 }
-
-
-                if (needStop) {
-                    workerTask.stop();
-
-                    log.info("Task stopping, connector name {}, config {}", workerTask.getConnectorName(), workerTask.getTaskConfig());
-                    runningTasks.remove(runnable);
-                    stoppingTasks.put(runnable, System.currentTimeMillis());
-                    needCommitPosition = true;
-                }
-            } else {
-                log.error("[BUG] Illegal State in when checking running tasks, {} is in {} state",
-                    ((WorkerTask) runnable).getConnectorName(), state.toString());
-            }
-        }
-
-        //If some tasks are closed, synchronize the position.
-        if (needCommitPosition) {
-            taskPositionCommitService.commitTaskPosition();
-        }
-
-        // get new Tasks
-        Map<String, List<ConnectKeyValue>> newTasks = new HashMap<>();
-        for (String connectorName : taskConfigs.keySet()) {
-            for (ConnectKeyValue keyValue : taskConfigs.get(connectorName)) {
-                boolean isNewTask = true;
-                if (isConfigInSet(keyValue, runningTasks) || isConfigInSet(keyValue, pendingTasks.keySet()) || isConfigInSet(keyValue, errorTasks)) {
-                    isNewTask = false;
-                }
-                if (isNewTask) {
-                    if (!newTasks.containsKey(connectorName)) {
-                        newTasks.put(connectorName, new ArrayList<>());
-                    }
-                    log.info("Add new tasks,connector name {}, config {}", connectorName, keyValue);
-                    newTasks.get(connectorName).add(keyValue);
-                }
-            }
-        }
-
-        //  STEP 2: try to create new tasks
-        for (String connectorName : newTasks.keySet()) {
-            for (ConnectKeyValue keyValue : newTasks.get(connectorName)) {
-                String taskType = keyValue.getString(RuntimeConfigDefine.TASK_TYPE);
-                if (TaskType.DIRECT.name().equalsIgnoreCase(taskType)) {
-                    //TODO 这个taskType到底干嘛的,看起来是直接把source和sink放在一个task里面直接跑，而且还没有connverter。好像也正常，直接source完然后sink，既然是同一个WorkerDirectTask 好像也确实不需要中间converter转换成字节流
-                    createDirectTask(connectorName, keyValue);
-                    continue;
-                }
-
-                String taskClass = keyValue.getString(RuntimeConfigDefine.TASK_CLASS);
-                ClassLoader loader = plugin.getPluginClassLoader(taskClass);
-                final ClassLoader currentThreadLoader = plugin.currentThreadLoader();
-                Class taskClazz;
-                boolean isolationFlag = false;
-                if (loader instanceof PluginClassLoader) {
-                    taskClazz = ((PluginClassLoader) loader).loadClass(taskClass, false);
-                    isolationFlag = true;
-                } else {
-                    taskClazz = Class.forName(taskClass);
-                }
-                final Task task = (Task) taskClazz.getDeclaredConstructor().newInstance();
-                final String converterClazzName = keyValue.getString(RuntimeConfigDefine.SOURCE_RECORD_CONVERTER);
-                Converter recordConverter = null;
-                if (StringUtils.isNotEmpty(converterClazzName)) {
-                    Class converterClazz = Class.forName(converterClazzName);
-                    recordConverter = (Converter) converterClazz.newInstance();
-                }
-                if (isolationFlag) {
-                    Plugin.compareAndSwapLoaders(loader);
-                }
-                if (task instanceof SourceTask) {
-                    DefaultMQProducer producer = ConnectUtil.initDefaultMQProducer(connectConfig);
-
-                    //必须保证提交到线程池之前，这里的类加载动作就全部完成。否线程池的类加载器是appClassLoader
-                    WorkerSourceTask workerSourceTask = new WorkerSourceTask(connectorName,
-                        (SourceTask) task, keyValue, positionManagementService, recordConverter, producer, workerState,isolationFlag?loader:currentThreadLoader);
-                    Plugin.compareAndSwapLoaders(currentThreadLoader);
-
-                    //这里没办法用线程池
-                    Future future = taskExecutor.submit(workerSourceTask);
-                    taskToFutureMap.put(workerSourceTask, future);
-                    this.pendingTasks.put(workerSourceTask, System.currentTimeMillis());
-                } else if (task instanceof SinkTask) {
-                    DefaultMQPullConsumer consumer = ConnectUtil.initDefaultMQPullConsumer(connectConfig);
-                    if (connectConfig.isAutoCreateGroupEnable()) {
-                        //TODO mz 这里我们可以借鉴一下！rocketMQ控制台的创建和使用
-                        ConnectUtil.createSubGroup(connectConfig, consumer.getConsumerGroup());
-                    }
-
-                    WorkerSinkTask workerSinkTask = new WorkerSinkTask(connectorName,
-                        (SinkTask) task, keyValue, offsetManagementService, recordConverter, consumer, workerState);
-                    Plugin.compareAndSwapLoaders(currentThreadLoader);
-                    Future future = taskExecutor.submit(workerSinkTask);
-                    taskToFutureMap.put(workerSinkTask, future);
-                    this.pendingTasks.put(workerSinkTask, System.currentTimeMillis());
-                }
             }
         }
 
 
-        //  STEP 3: check all pending state
-        for (Map.Entry<Runnable, Long> entry : pendingTasks.entrySet()) {
-            Runnable runnable = entry.getKey();
-            Long startTimestamp = entry.getValue();
-            Long currentTimeMillis = System.currentTimeMillis();
-            WorkerTaskState state = ((WorkerTask) runnable).getState();
-
-            if (WorkerTaskState.ERROR == state) {
-                errorTasks.add(runnable);
-                pendingTasks.remove(runnable);
-            } else if (WorkerTaskState.RUNNING == state) {
-                runningTasks.add(runnable);
-                pendingTasks.remove(runnable);
-            } else if (WorkerTaskState.NEW == state) {
-                log.info("[RACE CONDITION] we checked the pending tasks before state turns to PENDING");
-            } else if (WorkerTaskState.PENDING == state) {
-                if (currentTimeMillis - startTimestamp > MAX_START_TIMEOUT_MILLS) {
-                    ((WorkerTask) runnable).timeout();
-                    pendingTasks.remove(runnable);
-                    errorTasks.add(runnable);
-                }
-            } else {
-                log.error("[BUG] Illegal State in when checking pending tasks, {} is in {} state",
-                    ((WorkerTask) runnable).getConnectorName(), state.toString());
+        //已经不再分配给当前节点了,需要停止运行
+        List<WorkerTask> workerTasks = new CopyOnWriteArrayList<>();
+        for (Map.Entry<String, List<ConnectKeyValue>> entry : inRemove.entrySet()) {
+            for (ConnectKeyValue connectKeyValue : entry.getValue()) {
+                workerTasks.add(currentEpochWorkerTaskMap.get(ConnectKeyValueWrapper.wrap(connectKeyValue)));
             }
         }
-
-        //  STEP 4 check stopping tasks
-        for (Map.Entry<Runnable, Long> entry : stoppingTasks.entrySet()) {
-            Runnable runnable = entry.getKey();
-            Long stopTimestamp = entry.getValue();
-            Long currentTimeMillis = System.currentTimeMillis();
-            Future future = taskToFutureMap.get(runnable);
-            WorkerTaskState state = ((WorkerTask) runnable).getState();
-            // exited normally
-
-            if (WorkerTaskState.STOPPED == state) {
-                // concurrent modification Exception ? Will it pop that in the
-
-                if (null == future || !future.isDone()) {
-                    log.error("[BUG] future is null or Stopped task should have its Future.isDone() true, but false");
-                }
-                stoppingTasks.remove(runnable);
-                stoppedTasks.add(runnable);
-            } else if (WorkerTaskState.ERROR == state) {
-                stoppingTasks.remove(runnable);
-                errorTasks.add(runnable);
-            } else if (WorkerTaskState.STOPPING == state) {
-                if (currentTimeMillis - stopTimestamp > MAX_STOP_TIMEOUT_MILLS) {
-                    ((WorkerTask) runnable).timeout();
-                    stoppingTasks.remove(runnable);
-                    errorTasks.add(runnable);
-                }
-            } else {
-
-                log.error("[BUG] Illegal State in when checking stopping tasks, {} is in {} state",
-                    ((WorkerTask) runnable).getConnectorName(), state.toString());
+        CompletableFuture.allOf(workerTasks.stream().map(v -> CompletableFuture.runAsync(() -> {
+            try{
+                v.stop();
+            }catch (Exception ex){
+                log.error("",ex);
+            }finally {
+                //一个任务停止就把它移除出去
+                currentEpochWorkerTaskMap.remove(ConnectKeyValueWrapper.wrap(v.getTaskConfig()));
+                taskToFutureMap.remove(v);
             }
-        }
-
-        //  STEP 5 check errorTasks and stopped tasks
-        for (Runnable runnable: errorTasks) {
-            WorkerTask workerTask = (WorkerTask) runnable;
-            Future future = taskToFutureMap.get(runnable);
-
-            try {
-                if (null != future) {
-                    future.get(1000, TimeUnit.MILLISECONDS);
-                } else {
-                    log.error("[BUG] errorTasks reference not found in taskFutureMap");
-                }
-            } catch (ExecutionException e) {
-                Throwable t = e.getCause();
-            } catch (CancellationException | TimeoutException |  InterruptedException e) {
-
-            } finally {
-                future.cancel(true);
-                workerTask.cleanup();
-                taskToFutureMap.remove(runnable);
-                errorTasks.remove(runnable);
-                cleanedErrorTasks.add(runnable);
-
+        }, taskExecutor)).toArray(CompletableFuture[]::new)).whenComplete((unused, throwable) -> {
+            //立即提交一次位移
+            if (workerTasks.size()>0) {
+                taskPositionCommitService.commitTaskPosition();
             }
-        }
+        }).get();
 
 
-        //  STEP 5 check errorTasks and stopped tasks
-        for (Runnable runnable: stoppedTasks) {
-            WorkerTask workerTask = (WorkerTask) runnable;
-            workerTask.cleanup();
-            Future future = taskToFutureMap.get(runnable);
-            try {
-                if (null != future) {
-                    future.get(1000, TimeUnit.MILLISECONDS);
-                } else {
-                    log.error("[BUG] stopped Tasks reference not found in taskFutureMap");
+        //新添加的task需要启动
+        for (Map.Entry<String, List<ConnectKeyValue>> entry : inAdd.entrySet()) {
+            for (ConnectKeyValue keyValue : entry.getValue()) {
+                try {
+                    WorkerTask task = createTask(entry.getKey(), keyValue);
+                    Future<?> future = taskExecutor.submit(task);
+                    taskToFutureMap.put(task,future);
+                    currentEpochWorkerTaskMap.put(ConnectKeyValueWrapper.wrap(keyValue), task);
+                }catch (Exception ex){
+                    log.error(String.format("create task failed connector=%s ConnectKeyValue=%s",entry.getKey(),keyValue),ex);
                 }
-            } catch (ExecutionException e) {
-                Throwable t = e.getCause();
-                log.info("[BUG] Stopped Tasks should not throw any exception");
-                t.printStackTrace();
-            } catch (CancellationException e) {
-                log.info("[BUG] Stopped Tasks throws PrintStackTrace");
-                e.printStackTrace();
-            } catch (TimeoutException e) {
-                log.info("[BUG] Stopped Tasks should not throw any exception");
-                e.printStackTrace();
-            } catch (InterruptedException e) {
-                log.info("[BUG] Stopped Tasks should not throw any exception");
-                e.printStackTrace();
-            }
-            finally {
-                future.cancel(true);
-                taskToFutureMap.remove(runnable);
-                stoppedTasks.remove(runnable);
-                cleanedStoppedTasks.add(runnable);
             }
         }
     }
 
-    private void createDirectTask(String connectorName, ConnectKeyValue keyValue) throws Exception {
-        String sourceTaskClass = keyValue.getString(RuntimeConfigDefine.SOURCE_TASK_CLASS);
-        Task sourceTask = getTask(sourceTaskClass);
+    /**
+     * @param connectorName connector的name
+     * @param keyValue task的keyValue
+     * @return
+     */
+    private WorkerTask createTask(String connectorName, ConnectKeyValue keyValue) {
+        try {
+            String taskType = keyValue.getString(RuntimeConfigDefine.TASK_TYPE);
 
-        String sinkTaskClass = keyValue.getString(RuntimeConfigDefine.SINK_TASK_CLASS);
-        Task sinkTask = getTask(sinkTaskClass);
+            if (TaskType.DIRECT.name().equalsIgnoreCase(taskType)) {
+                String sourceTaskClass = keyValue.getString(RuntimeConfigDefine.SOURCE_TASK_CLASS);
+                Task sourceTask = getTask(sourceTaskClass);
 
-        WorkerDirectTask workerDirectTask = new WorkerDirectTask(connectorName,
-            (SourceTask) sourceTask, (SinkTask) sinkTask, keyValue, positionManagementService, workerState);
+                String sinkTaskClass = keyValue.getString(RuntimeConfigDefine.SINK_TASK_CLASS);
+                Task sinkTask = getTask(sinkTaskClass);
 
-        Future future = taskExecutor.submit(workerDirectTask);
-        taskToFutureMap.put(workerDirectTask, future);
-        this.pendingTasks.put(workerDirectTask, System.currentTimeMillis());
+                WorkerDirectTask workerDirectTask = new WorkerDirectTask(connectorName,
+                        (SourceTask) sourceTask, (SinkTask) sinkTask, keyValue, positionManagementService, workerState);
+                return workerDirectTask;
+            }
+
+            String taskClass = keyValue.getString(RuntimeConfigDefine.TASK_CLASS);
+            ClassLoader loader = plugin.getPluginClassLoader(taskClass);
+            final ClassLoader currentThreadLoader = plugin.currentThreadLoader();
+            Class taskClazz;
+            boolean isolationFlag = false;
+            if (loader instanceof PluginClassLoader) {
+                taskClazz = ((PluginClassLoader) loader).loadClass(taskClass, false);
+                isolationFlag = true;
+            } else {
+                taskClazz = Class.forName(taskClass);
+            }
+            final Task task = (Task) taskClazz.getDeclaredConstructor().newInstance();
+            final String converterClazzName = keyValue.getString(RuntimeConfigDefine.SOURCE_RECORD_CONVERTER);
+            Converter recordConverter = null;
+            if (StringUtils.isNotEmpty(converterClazzName)) {
+                Class converterClazz = Class.forName(converterClazzName);
+                recordConverter = (Converter) converterClazz.newInstance();
+            }
+            if (isolationFlag) {
+                Plugin.compareAndSwapLoaders(loader);
+            }
+            if (task instanceof SourceTask) {
+                DefaultMQProducer producer = ConnectUtil.initDefaultMQProducer(connectConfig);
+
+                //必须保证提交到线程池之前，这里的类加载动作就全部完成。否线程池的类加载器是appClassLoader
+                WorkerSourceTask workerSourceTask = new WorkerSourceTask(connectorName,(SourceTask) task, keyValue, positionManagementService, recordConverter, producer, workerState,isolationFlag?loader:currentThreadLoader);
+                Plugin.compareAndSwapLoaders(currentThreadLoader);
+                return workerSourceTask;
+
+            } else if (task instanceof SinkTask) {
+                DefaultMQPullConsumer consumer = ConnectUtil.initDefaultMQPullConsumer(connectConfig);
+                if (connectConfig.isAutoCreateGroupEnable()) {
+                    //这里我们可以借鉴一下！rocketMQ控制台的创建和使用
+                    log.info("create sub group for sink task:"+consumer.getConsumerGroup());
+                    ConnectUtil.createSubGroup(connectConfig, consumer.getConsumerGroup());
+                }
+                WorkerSinkTask workerSinkTask = new WorkerSinkTask(connectorName,(SinkTask) task, keyValue, offsetManagementService, recordConverter, consumer, workerState,isolationFlag?loader:currentThreadLoader);
+                Plugin.compareAndSwapLoaders(currentThreadLoader);
+                return workerSinkTask;
+            }else {
+                throw new IllegalArgumentException();
+            }
+        }catch (Exception ex){
+            throw new RuntimeException(ex);
+        }
     }
 
-    private Task getTask(String taskClass) throws Exception {
-        ClassLoader loader = plugin.getPluginClassLoader(taskClass);
-        final ClassLoader currentThreadLoader = plugin.currentThreadLoader();
-        Class taskClazz;
-        boolean isolationFlag = false;
-        if (loader instanceof PluginClassLoader) {
-            taskClazz = ((PluginClassLoader) loader).loadClass(taskClass, false);
-            isolationFlag = true;
-        } else {
-            taskClazz = Class.forName(taskClass);
-        }
-        final Task task = (Task) taskClazz.getDeclaredConstructor().newInstance();
-        if (isolationFlag) {
-            Plugin.compareAndSwapLoaders(loader);
-        }
+    /**
+     * @param type 0:common 1:onlyLeft 2:onlyRight
+     * @return 比较 ConnectKeyValue 的uid,uid相同则任务相同
+     */
+    public static Map<String,List<ConnectKeyValue>> difference(Map<String,List<ConnectKeyValue>> left,Map<String,List<ConnectKeyValue>> right,int type){
+        Map<String, List<ConnectKeyValue>> returnMap = new ConcurrentHashMap<>();
 
-        Plugin.compareAndSwapLoaders(currentThreadLoader);
-        return task;
+        Collection<String> keyUnion = CollectionUtils.union(left.keySet(), right.keySet());
+
+        for (String key : keyUnion) {
+            List<ConnectKeyValue> leftTaskList = left.get(key)==null?new ArrayList<>():left.get(key);
+            List<ConnectKeyValue> rightTaskList = right.get(key)==null?new ArrayList<>():right.get(key);
+
+            List<String/*uid*/> leftTempList = leftTaskList.stream().map(t->t.getProperties().get(RuntimeConfigDefine.TASK_UID)).collect(Collectors.toList());
+            List<String/*uid*/> rightTempList = rightTaskList.stream().map(t->t.getProperties().get(RuntimeConfigDefine.TASK_UID)).collect(Collectors.toList());
+
+            Collection<ConnectKeyValue> difference = null;
+            if (type==1) {
+                Collection<String/*uid*/> tmp = CollectionUtils.subtract(leftTempList,rightTempList);
+                //左边比右边多
+                difference = leftTaskList.stream().filter(t -> tmp.contains(t.getString(RuntimeConfigDefine.TASK_UID))).collect(Collectors.toList());
+            }else if(type==2){
+                Collection<String/*uid*/> tmp = CollectionUtils.subtract(rightTempList,leftTempList);
+                //右边多
+                difference = rightTaskList.stream().filter(t -> tmp.contains(t.getString(RuntimeConfigDefine.TASK_UID))).collect(Collectors.toList());
+            }else if(type==0){
+                Collection<String/*uid*/> tmp = CollectionUtils.intersection(leftTempList,rightTempList);
+                //左右都有,随便拿一边
+                difference = leftTaskList.stream().filter(t -> tmp.contains(t.getString(RuntimeConfigDefine.TASK_UID))).collect(Collectors.toList());
+            }else{
+                throw new IllegalArgumentException();
+            }
+            if (difference.size()!=0) {
+                returnMap.put(key,new ArrayList<>(difference));
+            }
+        }
+        return returnMap;
+    }
+
+    private Task getTask(String taskClass) {
+        try{
+            ClassLoader loader = plugin.getPluginClassLoader(taskClass);
+            final ClassLoader currentThreadLoader = plugin.currentThreadLoader();
+            Class taskClazz;
+            boolean isolationFlag = false;
+            if (loader instanceof PluginClassLoader) {
+                taskClazz = ((PluginClassLoader) loader).loadClass(taskClass, false);
+                isolationFlag = true;
+            } else {
+                taskClazz = Class.forName(taskClass);
+            }
+            final Task task = (Task) taskClazz.getDeclaredConstructor().newInstance();
+            if (isolationFlag) {
+                Plugin.compareAndSwapLoaders(loader);
+            }
+            Plugin.compareAndSwapLoaders(currentThreadLoader);
+            return task;
+        }catch (Exception ex){
+            throw new RuntimeException(ex);
+        }
     }
 
     public class StateMachineService extends ServiceThread {
@@ -630,7 +432,7 @@ public class Worker {
             log.info(this.getServiceName() + " service started");
 
             while (!this.isStopped()) {
-                this.waitForRunning(1000);
+                this.waitForRunning(5000);
                 try {
                     //empty method
                     Worker.this.maintainConnectorState();
@@ -654,5 +456,30 @@ public class Worker {
         SOURCE,
         SINK,
         DIRECT;
+    }
+
+    /**
+     * 为了使用map 所以equals方法比较的是TASK_UID
+     */
+    public static class ConnectKeyValueWrapper{
+        private ConnectKeyValue connectKeyValue;
+        private ConnectKeyValueWrapper(){}
+        public static ConnectKeyValueWrapper wrap(ConnectKeyValue connectKeyValue){
+            ConnectKeyValueWrapper connectKeyValueWrapper = new ConnectKeyValueWrapper();
+            connectKeyValueWrapper.connectKeyValue = connectKeyValue;
+            return connectKeyValueWrapper;
+        }
+        @Override
+        public boolean equals(Object o) {
+            if (this == o) return true;
+            if (o == null || getClass() != o.getClass()) return false;
+            ConnectKeyValueWrapper that = (ConnectKeyValueWrapper) o;
+            return StringUtils.equals(that.connectKeyValue.getString(RuntimeConfigDefine.TASK_UID),connectKeyValue.getString(RuntimeConfigDefine.TASK_UID));
+        }
+
+        @Override
+        public int hashCode() {
+            return Objects.hash(connectKeyValue.getString(RuntimeConfigDefine.TASK_UID));
+        }
     }
 }

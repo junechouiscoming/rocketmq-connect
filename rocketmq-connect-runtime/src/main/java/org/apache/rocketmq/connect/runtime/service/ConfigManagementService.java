@@ -40,18 +40,12 @@ public interface ConfigManagementService {
     void stop();
 
     /**
-     * Get all connector configs from the cluster filter out DELETE set to 1
+     * Get all connector configs
      *
+     * @param status {@link org.apache.rocketmq.connect.runtime.config.RuntimeConfigDefine.CONFIG_STATUS}
      * @return
      */
-    Map<String, ConnectKeyValue> getConnectorConfigs();
-
-    /**
-     * Get all connector configs from the cluster including DELETED bit set to 1
-     *
-     * @return
-     */
-    Map<String, ConnectKeyValue> getConnectorConfigsIncludeDeleted();
+    Map<String, ConnectKeyValue> getConnectorConfigs(List<Integer> status);
 
     /**
      * Put the configs of the specified connector in the cluster.
@@ -61,23 +55,31 @@ public interface ConfigManagementService {
      * @return
      * @throws Exception
      */
-    String putConnectorConfig(String connectorName, ConnectKeyValue configs) throws Exception;
+    String putNewConnectorConfig(String connectorName, ConnectKeyValue configs) throws Exception;
+    String updateConnectorConfig(String connectorName, ConnectKeyValue configs) throws Exception;
 
+    /**
+     * 动态修改task的并发度 新增Task时候原本的task不会变化
+     */
+    String dynamicUpdateTaskNum(String connectorName, int num) throws Exception;
     /**
      * Remove the connector with the specified connector name in the cluster.
      *
      * @param connectorName
      */
     void removeConnectorConfig(String connectorName);
+    void disableConnectorConfig(String connectorName);
+    void enableConnectorConfig(String connectorName);
 
     void recomputeTaskConfigs(String connectorName, Connector connector, Long currentTimestamp);
 
     /**
      * Get all Task configs.
      *
+     * @param status 对应connector的状态
      * @return
      */
-    Map<String, List<ConnectKeyValue>> getTaskConfigs();
+    Map<String, List<ConnectKeyValue>> getTaskConfigs(List<Integer> status);
 
     /**
      * Persist all the configs in a store.

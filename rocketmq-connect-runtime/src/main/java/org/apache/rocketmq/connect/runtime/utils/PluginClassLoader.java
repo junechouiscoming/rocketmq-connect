@@ -59,7 +59,7 @@ public class PluginClassLoader extends URLClassLoader {
                         klass = findClass(name);
                     }
                 } catch (ClassNotFoundException e) {
-                    log.trace("Class '{}' not found. Delegating to parent", name);
+                    log.trace("pluginClassLoader Class '{}' not found. Delegating to parent", name);
                 }
             }
             if (klass == null) {

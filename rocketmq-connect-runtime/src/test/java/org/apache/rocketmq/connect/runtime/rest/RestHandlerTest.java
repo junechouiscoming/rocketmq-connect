@@ -42,13 +42,9 @@ import org.apache.rocketmq.connect.runtime.ConnectController;
 import org.apache.rocketmq.connect.runtime.common.ConnectKeyValue;
 import org.apache.rocketmq.connect.runtime.config.ConnectConfig;
 import org.apache.rocketmq.connect.runtime.config.RuntimeConfigDefine;
-import org.apache.rocketmq.connect.runtime.connectorwrapper.Worker;
-import org.apache.rocketmq.connect.runtime.connectorwrapper.WorkerConnector;
-import org.apache.rocketmq.connect.runtime.connectorwrapper.WorkerSourceTask;
-import org.apache.rocketmq.connect.runtime.connectorwrapper.WorkerState;
+import org.apache.rocketmq.connect.runtime.connectorwrapper.*;
 import org.apache.rocketmq.connect.runtime.service.ClusterManagementService;
 import org.apache.rocketmq.connect.runtime.service.ConfigManagementService;
-import org.apache.rocketmq.connect.runtime.service.DefaultConnectorContext;
 import org.apache.rocketmq.connect.runtime.service.PositionManagementServiceImpl;
 import org.junit.Before;
 import org.junit.Test;
@@ -124,7 +120,7 @@ public class RestHandlerTest {
 
     private Set<WorkerConnector> workerConnectors;
 
-    private Set<Runnable> workerTasks;
+    private Set<WorkerTask> workerTasks;
 
     private AtomicReference<WorkerState> workerState;
 
@@ -135,7 +131,7 @@ public class RestHandlerTest {
         when(connectController.getConnectConfig()).thenReturn(connectConfig);
         when(connectConfig.getHttpPort()).thenReturn(8081);
         when(connectController.getConfigManagementService()).thenReturn(configManagementService);
-        when(configManagementService.putConnectorConfig(anyString(), any(ConnectKeyValue.class))).thenReturn("");
+        when(configManagementService.putNewConnectorConfig(anyString(), any(ConnectKeyValue.class))).thenReturn("");
 
         String connectName = "testConnector";
         ConnectKeyValue connectKeyValue = new ConnectKeyValue();
@@ -161,8 +157,8 @@ public class RestHandlerTest {
                 put(connectName, connectKeyValues);
             }
         };
-        when(configManagementService.getConnectorConfigs()).thenReturn(connectorConfigs);
-        when(configManagementService.getTaskConfigs()).thenReturn(taskConfigs);
+        when(configManagementService.getConnectorConfigs(RuntimeConfigDefine.CONFIG_ENABLE_DISABLE_LST)).thenReturn(connectorConfigs);
+        when(configManagementService.getTaskConfigs(RuntimeConfigDefine.CONFIG_ENABLE_DISABLE_LST)).thenReturn(taskConfigs);
 
         aliveWorker = new ArrayList<String>() {
             {
@@ -185,27 +181,6 @@ public class RestHandlerTest {
             }
         };
 
-        WorkerConnector workerConnector1 = new WorkerConnector("testConnectorName1", connector, connectKeyValue, new DefaultConnectorContext("testConnectorName1", connectController));
-        WorkerConnector workerConnector2 = new WorkerConnector("testConnectorName2", connector, connectKeyValue1, new DefaultConnectorContext("testConnectorName2", connectController));
-        workerConnectors = new HashSet<WorkerConnector>() {
-            {
-                add(workerConnector1);
-                add(workerConnector2);
-            }
-        };
-        WorkerSourceTask workerSourceTask1 = new WorkerSourceTask("testConnectorName1", sourceTask, connectKeyValue, positionManagementServiceImpl, converter, producer, workerState);
-        WorkerSourceTask workerSourceTask2 = new WorkerSourceTask("testConnectorName2", sourceTask, connectKeyValue1, positionManagementServiceImpl, converter, producer, workerState);
-        workerTasks = new HashSet<Runnable>() {
-            {
-                add(workerSourceTask1);
-                add(workerSourceTask2);
-            }
-        };
-        when(connectController.getWorker()).thenReturn(worker);
-        when(worker.getWorkingConnectors()).thenReturn(workerConnectors);
-        when(worker.getWorkingTasks()).thenReturn(workerTasks);
-
-        restHandler = new RestHandler(connectController);
 
         httpClient = HttpClientBuilder.create().build();
     }

@@ -23,7 +23,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import org.apache.rocketmq.connect.runtime.common.ConnAndTaskConfigs;
+import org.apache.rocketmq.connect.runtime.common.ConnectorAndTaskConfigs;
 import org.apache.rocketmq.connect.runtime.common.ConnectKeyValue;
 
 public class TransferUtils {
@@ -94,7 +94,7 @@ public class TransferUtils {
         return jsonObject.toString();
     }
 
-    public static ConnAndTaskConfigs toConnAndTaskConfigs(String json) {
+    public static ConnectorAndTaskConfigs toConnAndTaskConfigs(String json) {
 
         JSONObject jsonObject = JSON.parseObject(json, JSONObject.class);
 
@@ -110,7 +110,7 @@ public class TransferUtils {
             transferedTasksConfigs.put(key, stringToKeyValueList(taskConfigs.get(key)));
         }
 
-        ConnAndTaskConfigs res = new ConnAndTaskConfigs();
+        ConnectorAndTaskConfigs res = new ConnectorAndTaskConfigs();
         res.setConnectorConfigs(transferedConnectorConfigs);
         res.setTaskConfigs(transferedTasksConfigs);
         return res;

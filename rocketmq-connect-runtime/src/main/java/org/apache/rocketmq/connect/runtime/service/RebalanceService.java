@@ -65,7 +65,6 @@ public class RebalanceService extends ServiceThread {
                 this.rebalanceImpl.doRebalance();
             } catch (Exception e) {
                 log.error("this.rebalanceImpl.doRebalance() failed",e);
-                e.printStackTrace();
             }
         }
 

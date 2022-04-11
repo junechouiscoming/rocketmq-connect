@@ -35,7 +35,7 @@ import org.apache.rocketmq.client.consumer.DefaultMQPushConsumer;
 import org.apache.rocketmq.client.producer.DefaultMQProducer;
 import org.apache.rocketmq.client.producer.SendCallback;
 import org.apache.rocketmq.common.message.Message;
-import org.apache.rocketmq.connect.runtime.common.ConnAndTaskConfigs;
+import org.apache.rocketmq.connect.runtime.common.ConnectorAndTaskConfigs;
 import org.apache.rocketmq.connect.runtime.config.ConnectConfig;
 import org.apache.rocketmq.connect.runtime.store.KeyValueStore;
 import org.apache.rocketmq.connect.runtime.utils.TestUtils;
@@ -121,11 +121,11 @@ public class PositionManagementServiceImplTest {
 
         final Field producerField = BrokerBasedLog.class.getDeclaredField("producer");
         producerField.setAccessible(true);
-        producerField.set((BrokerBasedLog<String, ConnAndTaskConfigs>) dataSynchronizerField.get(positionManagementService), producer);
+        producerField.set((BrokerBasedLog<String, ConnectorAndTaskConfigs>) dataSynchronizerField.get(positionManagementService), producer);
 
         final Field consumerField = BrokerBasedLog.class.getDeclaredField("consumer");
         consumerField.setAccessible(true);
-        consumerField.set((BrokerBasedLog<String, ConnAndTaskConfigs>) dataSynchronizerField.get(positionManagementService), consumer);
+        consumerField.set((BrokerBasedLog<String, ConnectorAndTaskConfigs>) dataSynchronizerField.get(positionManagementService), consumer);
 
         positionManagementService.start();
 

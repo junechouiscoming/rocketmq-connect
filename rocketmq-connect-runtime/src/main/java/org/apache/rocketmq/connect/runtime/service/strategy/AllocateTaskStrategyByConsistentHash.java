@@ -25,20 +25,22 @@ import org.apache.commons.lang3.StringUtils;
 import org.apache.rocketmq.common.consistenthash.ConsistentHashRouter;
 import org.apache.rocketmq.common.consistenthash.HashFunction;
 import org.apache.rocketmq.common.consistenthash.Node;
-import org.apache.rocketmq.connect.runtime.common.ConnAndTaskConfigs;
+import org.apache.rocketmq.connect.runtime.common.AllocateResultConfigs;
+import org.apache.rocketmq.connect.runtime.common.ConnectorAndTaskConfigs;
 import org.apache.rocketmq.connect.runtime.common.ConnectKeyValue;
 import org.apache.rocketmq.connect.runtime.common.LoggerName;
 import org.apache.rocketmq.connect.runtime.config.RuntimeConfigDefine;
+import org.checkerframework.checker.units.qual.A;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-public class AllocateConnAndTaskStrategyByConsistentHash implements AllocateConnAndTaskStrategy {
+public class AllocateTaskStrategyByConsistentHash implements AllocateTaskStrategy {
     private static final Logger log = LoggerFactory.getLogger(LoggerName.ROCKETMQ_RUNTIME);
 
     private int virtualNodes;
     private HashFunction hashFunc;
 
-    public AllocateConnAndTaskStrategyByConsistentHash() {
+    public AllocateTaskStrategyByConsistentHash() {
         virtualNodes = Integer.parseInt(System.getProperty(RuntimeConfigDefine.VIRTUAL_NODE, "0"));
         String funcName = System.getProperty(RuntimeConfigDefine.HASH_FUNC);
         if (StringUtils.isNoneEmpty(funcName)) {
@@ -51,9 +53,8 @@ public class AllocateConnAndTaskStrategyByConsistentHash implements AllocateConn
         }
     }
 
-    @Override public ConnAndTaskConfigs allocate(List<String> allWorker, String curWorker,
-        Map<String, ConnectKeyValue> connectorConfigs, Map<String, List<ConnectKeyValue>> taskConfigs) {
-        ConnAndTaskConfigs allocateResult = new ConnAndTaskConfigs();
+    @Override public AllocateResultConfigs allocate(List<String> allWorker, String curWorker, Map<String, List<ConnectKeyValue>> taskConfigs) {
+ /*       AllocateResultConfigs allocateResult = new AllocateResultConfigs();
         if (null == allWorker || 0 == allWorker.size()) {
             return allocateResult;
         }
@@ -68,8 +69,8 @@ public class AllocateConnAndTaskStrategyByConsistentHash implements AllocateConn
             connector.getValue().stream().filter(kv -> curWorker.equals(router.routeNode(kv.toString()).getKey()))
                 .forEach(allocateResult.getTaskConfigs().computeIfAbsent(connector.getKey(), k -> new ArrayList<>())::add);
         }
-        log.debug("allocate result: " + allocateResult);
-        return allocateResult;
+        log.debug("allocate result: " + allocateResult);*/
+        return new AllocateResultConfigs();
     }
 
     private ConsistentHashRouter getRouter(Collection<ClientNode> cidNodes) {

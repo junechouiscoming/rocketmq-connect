@@ -49,14 +49,18 @@ public class TaskPositionCommitService extends ServiceThread {
 
     @Override
     public void run() {
-        log.info(this.getServiceName() + " service started");
+        log.info("commitTaskPosition service started");
 
         while (!this.isStopped()) {
-            this.waitForRunning(10000);
-            commitTaskPosition();
+            try{
+                commitTaskPosition();
+                this.waitForRunning(5000);
+            }catch (Exception ex){
+                log.error("commitTaskPosition failed",ex);
+            }
         }
 
-        log.info(this.getServiceName() + " service end");
+        log.info("commitTaskPosition service end");
     }
 
     @Override
@@ -65,10 +69,26 @@ public class TaskPositionCommitService extends ServiceThread {
     }
 
 
-    public void commitTaskPosition() {
-        positionManagementService.persist();
-        offsetManagementService.persist();
-        positionManagementService.synchronize();
-        offsetManagementService.synchronize();
+    public synchronized void commitTaskPosition() {
+        try {
+            positionManagementService.persist();
+        } catch (Exception e) {
+            log.error("positionManagementService persist failed",e);
+        }
+        try {
+            offsetManagementService.persist();
+        } catch (Exception e) {
+            log.error("offsetManagementService persist failed",e);
+        }
+        try {
+            positionManagementService.synchronize();
+        } catch (Exception e) {
+            log.error("positionManagementService synchronize failed",e);
+        }
+        try {
+            offsetManagementService.synchronize();
+        } catch (Exception e) {
+            log.error("offsetManagementService synchronize failed",e);
+        }
     }
 }

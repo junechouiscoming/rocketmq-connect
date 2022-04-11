@@ -26,13 +26,9 @@ public interface WorkerTask extends Runnable {
 
     public void stop();
 
-    public void cleanup();
-
     public String getConnectorName();
 
     public ConnectKeyValue getTaskConfig();
 
     public Object getJsonObject();
-
-    public void timeout();
 }

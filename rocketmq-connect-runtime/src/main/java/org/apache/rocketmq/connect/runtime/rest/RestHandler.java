@@ -18,17 +18,17 @@
 package org.apache.rocketmq.connect.runtime.rest;
 
 import com.alibaba.fastjson.JSON;
+import com.alibaba.fastjson.serializer.SerializerFeature;
 import io.javalin.Context;
 import io.javalin.Javalin;
-import java.util.HashMap;
-import java.util.HashSet;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
+
+import java.util.*;
+
+import org.apache.commons.lang3.StringUtils;
 import org.apache.rocketmq.connect.runtime.ConnectController;
 import org.apache.rocketmq.connect.runtime.common.ConnectKeyValue;
 import org.apache.rocketmq.connect.runtime.common.LoggerName;
-import org.apache.rocketmq.connect.runtime.connectorwrapper.WorkerConnector;
+import org.apache.rocketmq.connect.runtime.config.RuntimeConfigDefine;
 import org.apache.rocketmq.connect.runtime.connectorwrapper.WorkerTask;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -51,75 +51,89 @@ public class RestHandler {
         Javalin app = Javalin.create();
         app.enableCaseSensitiveUrls();
         app = app.start(connectController.getConnectConfig().getHttpPort());
-        app.get("/connectors/stopAll", this::handleStopAllConnector);
-        app.get("/connectors/pauseAll", this::handlePauseAllConnector);
-        app.get("/connectors/resumeAll", this::handleResumeAllConnector);
-        app.get("/connectors/enableAll", this::handleEnableAllConnector);
-        app.get("/connectors/disableAll", this::handleDisableAllConnector);
-        app.get("/connectors/:connectorName", this::handleCreateConnector);
-        app.get("/connectors/:connectorName/config", this::handleQueryConnectorConfig);
-        app.get("/connectors/:connectorName/status", this::handleQueryConnectorStatus);
-        app.get("/connectors/:connectorName/stop", this::handleStopConnector);
-        app.get("/connectors/:connectorName/pause", this::handlePauseConnector);
-        app.get("/connectors/:connectorName/resume", this::handleResumeConnector);
-        app.get("/connectors/:connectorName/enable", this::handleEnableConnector);
-        app.get("/connectors/:connectorName/disable", this::handleDisableConnector);
+
+
+        //查看全部connector info以及对应的task info
+        app.get("/getConnectorTask", this::getConnectorTask);
+        //查看全部connector info
+        app.get("/getConnectors", this::getAllConnectors);
+        //查看单个connector
+        app.get("/getConnectors/:connectorName", this::getConnectors);
+        //查看指定connector的配置信息
+        app.get("/getConnectorTask/:connectorName", this::handleQueryConnectorConfig);
+        //查看指定connector状态
+        app.get("/getConnectorsStatus/:connectorName", this::handleQueryConnectorStatus);
+
+
+
+        //查看集群信息
         app.get("/getClusterInfo", this::getClusterInfo);
-        app.get("/getConfigInfo", this::getConfigInfo);
-        app.get("/getAllocatedConnectors", this::getAllocatedConnectors);
-        app.get("/getAllocatedTasks", this::getAllocatedTasks);
+        //查看分配给自己的任务的状态
+        app.get("/getAllocatedTask", this::getAllocatedTask);
+        //插件重新加载
         app.get("/plugin/reload", this::reloadPlugins);
+
+
+        //新增connector
+        app.get("/connectors/create/:connectorName", this::handleCreateConnector);
+        app.get("/connectors/update/:connectorName", this::handleUpdateConnector);
+        app.get("/connectors/taskNum/:connectorName/:taskNum", this::handleTaskNum);
+
+        //启用
+        app.get("/connectors/all/enable", this::handleEnableAllConnector);
+        //暂时禁用,配置文件读出来也不会去执行,同时停止该connector对应的Task. task的stop是通过把connector禁用，这样maintainTaskStat时候就不会分配该task，达到维护task的目的
+        app.get("/connectors/all/disable", this::handleDisableAllConnector);
+        //删除
+        app.get("/connectors/all/remove", this::handleRemoveAllConnector);
+
+        //启用
+        app.get("/connectors/single/:connectorName/enable", this::handleEnableConnector);
+        //暂时禁用,配置文件读出来也不会去执行,同时停止该connector对应的Task
+        app.get("/connectors/single/:connectorName/disable", this::handleDisableConnector);
+        //删除
+        app.get("/connectors/single/:connectorName/remove", this::handleRemoveConnector);
+
     }
 
 
-    private void getAllocatedConnectors(Context context) {
-
-        Set<WorkerConnector> workerConnectors = connectController.getWorker().getWorkingConnectors();
-        Set<Runnable> workerTasks = connectController.getWorker().getWorkingTasks();
-        Map<String, ConnectKeyValue> connectors = new HashMap<>();
-        for (WorkerConnector workerConnector : workerConnectors) {
-            connectors.put(workerConnector.getConnectorName(), workerConnector.getKeyValue());
-        }
-        context.result(JSON.toJSONString(connectors));
+    /**
+     * 查询整个系统运行的全部的connectors
+     * @param context
+     */
+    private void getAllConnectors(Context context) {
+        Map<String, ConnectKeyValue> keyValueMap = connectController.getConfigManagementService().getConnectorConfigs(RuntimeConfigDefine.CONFIG_ENABLE_DISABLE_LST);
+        context.result(JSON.toJSONString(keyValueMap, SerializerFeature.PrettyFormat,SerializerFeature.WriteDateUseDateFormat));
+    }
+    private void getConnectors(Context context) {
+        String connectorName = context.pathParam("connectorName");
+        Map<String, ConnectKeyValue> keyValueMap = connectController.getConfigManagementService().getConnectorConfigs(RuntimeConfigDefine.CONFIG_ENABLE_DISABLE_LST);
+        context.result(JSON.toJSONString(keyValueMap.get(connectorName), SerializerFeature.PrettyFormat,SerializerFeature.WriteDateUseDateFormat));
     }
 
-
-
-    private void getAllocatedTasks(Context context) {
-        StringBuilder sb = new StringBuilder();
-
-        Set<Runnable> allErrorTasks = new HashSet<>();
-        allErrorTasks.addAll(connectController.getWorker().getErrorTasks());
-        allErrorTasks.addAll(connectController.getWorker().getCleanedErrorTasks());
-
-        Set<Runnable> allStoppedTasks = new HashSet<>();
-        allStoppedTasks.addAll(connectController.getWorker().getStoppedTasks());
-        allStoppedTasks.addAll(connectController.getWorker().getCleanedStoppedTasks());
-
+    private void getAllocatedTask(Context context) {
         Map<String, Object> formatter = new HashMap<>();
         formatter.put("pendingTasks", convertWorkerTaskToString(connectController.getWorker().getPendingTasks()));
         formatter.put("runningTasks",  convertWorkerTaskToString(connectController.getWorker().getWorkingTasks()));
         formatter.put("stoppingTasks",  convertWorkerTaskToString(connectController.getWorker().getStoppingTasks()));
-        formatter.put("stoppedTasks",  convertWorkerTaskToString(allStoppedTasks));
-        formatter.put("errorTasks",  convertWorkerTaskToString(allErrorTasks));
+        formatter.put("stoppedTasks",  convertWorkerTaskToString(connectController.getWorker().getStoppedTasks()));
+        formatter.put("errorTasks",  convertWorkerTaskToString(connectController.getWorker().getErrorTasks()));
 
-        context.result(JSON.toJSONString(formatter));
+        context.result(JSON.toJSONString(formatter, SerializerFeature.PrettyFormat,SerializerFeature.WriteDateUseDateFormat));
     }
 
-    private void getConfigInfo(Context context) {
-
-        Map<String, ConnectKeyValue> connectorConfigs = connectController.getConfigManagementService().getConnectorConfigs();
-        Map<String, List<ConnectKeyValue>> taskConfigs = connectController.getConfigManagementService().getTaskConfigs();
+    private void getConnectorTask(Context context) {
+        Map<String, ConnectKeyValue> connectorConfigs = connectController.getConfigManagementService().getConnectorConfigs(RuntimeConfigDefine.CONFIG_ENABLE_DISABLE_LST);
+        Map<String, List<ConnectKeyValue>> taskConfigs = connectController.getConfigManagementService().getTaskConfigs(RuntimeConfigDefine.CONFIG_ENABLE_DISABLE_LST);
 
         Map<String, Map> formatter = new HashMap<>();
         formatter.put(CONNECTOR_CONFIGS, connectorConfigs);
         formatter.put(TASK_CONFIGS, taskConfigs);
 
-        context.result(JSON.toJSONString(formatter));
+        context.result(JSON.toJSONString(formatter, SerializerFeature.PrettyFormat,SerializerFeature.WriteDateUseDateFormat));
     }
 
     private void getClusterInfo(Context context) {
-        context.result(JSON.toJSONString(connectController.getClusterManagementService().getAllAliveWorkers()));
+        context.result(JSON.toJSONString(connectController.getClusterManagementService().getAllAliveWorkers(),SerializerFeature.PrettyFormat));
     }
 
     private void handleCreateConnector(Context context) {
@@ -129,7 +143,7 @@ public class RestHandler {
             context.result("failed! query param 'config' is required ");
             return;
         }
-        log.info("config: {}", arg);
+        log.info("handle new Connector Config: {}", arg);
         //mz 把rest请求中的config请求体解析为map然后转换为ConnectKeyValue格式
         Map keyValue = JSON.parseObject(arg, Map.class);
         ConnectKeyValue configs = new ConnectKeyValue();
@@ -138,7 +152,63 @@ public class RestHandler {
         }
         try {
             //mz 创建一个新的connector实例
-            String result = connectController.getConfigManagementService().putConnectorConfig(connectorName, configs);
+            String result = connectController.getConfigManagementService().putNewConnectorConfig(connectorName, configs);
+            if (result != null && result.length() > 0) {
+                context.result(result);
+            } else {
+                context.result("success");
+            }
+        } catch (Exception e) {
+            log.error("Handle createConnector error .", e);
+            context.result("failed");
+        }
+    }
+
+    private void handleTaskNum(Context context){
+        String connectorName = context.pathParam("connectorName");
+        String taskNum = context.pathParam("taskNum");
+        if(taskNum==null || taskNum.trim().length()==0){
+            context.result("failed cuz taskNum can`t be null or zero");
+        }
+        try{
+            int i = Integer.parseInt(taskNum);
+            if (i<=0) {
+                context.result("failed cuz taskNum can`t <= 0");
+            }
+        }catch (Exception ex){
+            context.result("failed cuz taskNum is not a number");
+        }
+
+        try {
+            String result = connectController.getConfigManagementService().dynamicUpdateTaskNum(connectorName, Integer.valueOf(taskNum));
+            if (result != null && result.length() > 0) {
+                context.result(result);
+            } else {
+                context.result("success");
+            }
+        } catch (Exception e) {
+            log.error("dynamicUpdateTaskNum failed",e);
+            context.result("failed"+e.getMessage());
+        }
+    }
+
+    private void handleUpdateConnector(Context context) {
+        String connectorName = context.pathParam("connectorName");
+        String arg = context.req.getParameter("config");
+        if (arg == null) {
+            context.result("failed! query param 'config' is required ");
+            return;
+        }
+        log.info("handle new Connector Config: {}", arg);
+        //mz 把rest请求中的config请求体解析为map然后转换为ConnectKeyValue格式
+        Map keyValue = JSON.parseObject(arg, Map.class);
+        ConnectKeyValue configs = new ConnectKeyValue();
+        for (Object key : keyValue.keySet()) {
+            configs.put((String) key, keyValue.get(key).toString());
+        }
+        try {
+            //mz 创建一个新的connector实例
+            String result = connectController.getConfigManagementService().updateConnectorConfig(connectorName, configs);
             if (result != null && result.length() > 0) {
                 context.result(result);
             } else {
@@ -154,43 +224,74 @@ public class RestHandler {
 
         String connectorName = context.pathParam("connectorName");
 
-        Map<String, ConnectKeyValue> connectorConfigs = connectController.getConfigManagementService().getConnectorConfigs();
-        Map<String, List<ConnectKeyValue>> taskConfigs = connectController.getConfigManagementService().getTaskConfigs();
-        StringBuilder sb = new StringBuilder();
-        sb.append("ConnectorConfigs:")
-            .append(JSON.toJSONString(connectorConfigs.get(connectorName)))
-            .append("\n")
-            .append("TaskConfigs:")
-            .append(JSON.toJSONString(taskConfigs.get(connectorName)));
-        context.result(sb.toString());
+        Map<String, ConnectKeyValue> connectorConfigs = connectController.getConfigManagementService().getConnectorConfigs(RuntimeConfigDefine.CONFIG_ENABLE_DISABLE_LST);
+        Map<String, List<ConnectKeyValue>> taskConfigs = connectController.getConfigManagementService().getTaskConfigs(RuntimeConfigDefine.CONFIG_ENABLE_DISABLE_LST);
+        Map<Map<String, ConnectKeyValue>, Map<String, List<ConnectKeyValue>>> map = new HashMap<>();
+
+        ConnectKeyValue connectKeyValue = connectorConfigs.get(connectorName);
+        if (connectKeyValue==null) {
+            context.result("can`t find this connector");
+            return;
+        }
+
+        Map map2 = new HashMap();
+        map2.put("connector", connectKeyValue);
+        map2.put("tasks", taskConfigs.get(connectorName));
+
+        context.result(JSON.toJSONString(map2,SerializerFeature.PrettyFormat));
     }
 
     private void handleQueryConnectorStatus(Context context) {
 
         String connectorName = context.pathParam("connectorName");
-        Map<String, ConnectKeyValue> connectorConfigs = connectController.getConfigManagementService().getConnectorConfigs();
+        Map<String, ConnectKeyValue> connectorConfigs = connectController.getConfigManagementService().getConnectorConfigs(RuntimeConfigDefine.CONFIG_ENABLE_DISABLE_LST);
 
         if (connectorConfigs.containsKey(connectorName)) {
-            context.result("running");
+            int status = connectorConfigs.get(connectorName).getInt(RuntimeConfigDefine.CONFIG_STATUS);
+            String rs = "";
+            if (RuntimeConfigDefine.CONFIG_STATUS_ENABLE == status) {
+                rs = "enable";
+            } else if (RuntimeConfigDefine.CONFIG_STATUS_DISABLE == status) {
+                rs = "disable";
+            }else if (RuntimeConfigDefine.CONFIG_STATUS_REMOVE == status) {
+                rs = "remove";
+            }else{
+                rs = "unknown status";
+            }
+            context.result(rs);
         } else {
-            context.result("not running");
+            context.result("can`t find this connector !");
         }
     }
 
-    private void handleStopConnector(Context context) {
-        String connectorName = context.pathParam("connectorName");
+    //启用
+    private void handleEnableAllConnector(Context context) {
         try {
-
-            connectController.getConfigManagementService().removeConnectorConfig(connectorName);
+            Map<String, ConnectKeyValue> connectorConfigs = connectController.getConfigManagementService().getConnectorConfigs(RuntimeConfigDefine.CONFIG_DISABLE_LST);
+            for (String connector : connectorConfigs.keySet()) {
+                connectController.getConfigManagementService().enableConnectorConfig(connector);
+            }
             context.result("success");
         } catch (Exception e) {
             context.result("failed");
         }
     }
-
-    private void handleStopAllConnector(Context context) {
+    //禁用
+    private void handleDisableAllConnector(Context context) {
         try {
-            Map<String, ConnectKeyValue> connectorConfigs = connectController.getConfigManagementService().getConnectorConfigs();
+            Map<String, ConnectKeyValue> connectorConfigs = connectController.getConfigManagementService().getConnectorConfigs(RuntimeConfigDefine.CONFIG_ENABLE_LST);
+            for (String connector : connectorConfigs.keySet()) {
+                connectController.getConfigManagementService().disableConnectorConfig(connector);
+            }
+            context.result("success");
+        } catch (Exception e) {
+            context.result("failed");
+        }
+    }
+    //删除
+    private void handleRemoveAllConnector(Context context) {
+        try {
+            Map<String, ConnectKeyValue> connectorConfigs = connectController.getConfigManagementService().getConnectorConfigs(RuntimeConfigDefine.CONFIG_ENABLE_DISABLE_LST);
             for (String connector : connectorConfigs.keySet()) {
                 connectController.getConfigManagementService().removeConnectorConfig(connector);
             }
@@ -200,41 +301,45 @@ public class RestHandler {
         }
     }
 
-    private void handlePauseAllConnector(Context context) {
 
-    }
-
-    private void handleResumeAllConnector(Context context) {
-
-    }
-
-    private void handleEnableAllConnector(Context context) {
-
-    }
-
-    private void handleDisableAllConnector(Context context) {
-
-    }
-
-    private void handlePauseConnector(Context context) {
-
-    }
-
-    private void handleResumeConnector(Context context) {
-
-    }
-
+    //启用
     private void handleEnableConnector(Context context) {
-
+        try {
+            String connectorName = context.pathParam("connectorName");
+            connectController.getConfigManagementService().enableConnectorConfig(connectorName);
+            context.result("success");
+        }catch (IllegalStateException e){
+            context.result(e.getMessage());
+        }catch (Exception e) {
+            context.result("failed");
+        }
     }
-
+    //禁用
     private void handleDisableConnector(Context context) {
-
+        try {
+            String connectorName = context.pathParam("connectorName");
+            connectController.getConfigManagementService().disableConnectorConfig(connectorName);
+            context.result("success");
+        } catch (Exception e) {
+            context.result("failed");
+        }
+    }
+    //删除
+    private void handleRemoveConnector(Context context) {
+        try {
+            String connectorName = context.pathParam("connectorName");
+            connectController.getConfigManagementService().removeConnectorConfig(connectorName);
+            context.result("success");
+        } catch (Exception e) {
+            context.result("failed");
+        }
     }
 
-    private Set<Object> convertWorkerTaskToString(Set<Runnable> tasks) {
+
+
+    private Set<Object> convertWorkerTaskToString(Set<WorkerTask> tasks) {
         Set<Object> result = new HashSet<>();
-        for (Runnable task : tasks) {
+        for (WorkerTask task : tasks) {
             result.add(((WorkerTask) task).getJsonObject());
         }
         return result;

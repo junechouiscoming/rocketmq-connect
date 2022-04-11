@@ -20,6 +20,7 @@ package org.apache.rocketmq.connect.runtime.common;
 import io.openmessaging.KeyValue;
 import java.io.Serializable;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -35,6 +36,10 @@ public class ConnectKeyValue implements KeyValue, Serializable {
 
     public ConnectKeyValue() {
         properties = new ConcurrentHashMap<>();
+    }
+
+    public ConnectKeyValue(Map<String, String> properties) {
+        this.properties = properties;
     }
 
     @Override

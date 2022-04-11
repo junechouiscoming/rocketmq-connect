@@ -18,51 +18,39 @@
 package org.apache.rocketmq.connect.runtime.connectorwrapper;
 
 import com.alibaba.fastjson.JSON;
+import com.alibaba.fastjson.serializer.SerializerFeature;
 import io.openmessaging.KeyValue;
 import io.openmessaging.connector.api.PositionStorageReader;
 import io.openmessaging.connector.api.common.QueueMetaData;
-import io.openmessaging.connector.api.data.Converter;
-import io.openmessaging.connector.api.data.EntryType;
-import io.openmessaging.connector.api.data.SinkDataEntry;
-import io.openmessaging.connector.api.data.DataEntryBuilder;
-import io.openmessaging.connector.api.data.SourceDataEntry;
-import io.openmessaging.connector.api.data.Schema;
-import io.openmessaging.connector.api.data.Field;
+import io.openmessaging.connector.api.data.*;
 import io.openmessaging.connector.api.sink.SinkTask;
 import io.openmessaging.connector.api.sink.SinkTaskContext;
 
 import java.nio.ByteBuffer;
-import java.util.ArrayList;
-import java.util.Base64;
-import java.util.HashMap;
-import java.util.Iterator;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
+import java.util.*;
+import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
+import java.util.function.Consumer;
 
-import org.apache.commons.lang3.StringUtils;
-import org.apache.rocketmq.client.consumer.DefaultMQPullConsumer;
-import org.apache.rocketmq.client.consumer.PullResult;
-import org.apache.rocketmq.client.consumer.PullStatus;
+import org.apache.rocketmq.client.consumer.*;
 import org.apache.rocketmq.client.exception.MQBrokerException;
 import org.apache.rocketmq.client.exception.MQClientException;
 import org.apache.rocketmq.common.message.MessageExt;
 import org.apache.rocketmq.common.message.MessageQueue;
+import org.apache.rocketmq.connect.runtime.ConnectController;
 import org.apache.rocketmq.connect.runtime.common.ConnectKeyValue;
 import org.apache.rocketmq.connect.runtime.common.LoggerName;
-import org.apache.rocketmq.connect.runtime.config.RuntimeConfigDefine;
-import org.apache.rocketmq.connect.runtime.converter.JsonConverter;
-import org.apache.rocketmq.connect.runtime.converter.RocketMQConverter;
 import org.apache.rocketmq.connect.runtime.service.PositionManagementService;
 import org.apache.rocketmq.connect.runtime.store.PositionStorageReaderImpl;
+import org.apache.rocketmq.connect.runtime.utils.Plugin;
 import org.apache.rocketmq.remoting.exception.RemotingException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
  * A wrapper of {@link SinkTask} for runtime.
+ * 不要重写equals方法
  */
 public class WorkerSinkTask implements WorkerTask {
 
@@ -72,13 +60,6 @@ public class WorkerSinkTask implements WorkerTask {
      * The configuration key that provides the list of topicNames that are inputs for this SinkTask.
      */
     public static final String QUEUENAMES_CONFIG = "topicNames";
-
-    /**
-     * The configuration key that provide the list of topicQueues that are inputs for this SinkTask;
-     * The config value format is topicName1,brokerName1,queueId1;topicName2,brokerName2,queueId2,
-     * use topicName1, brokerName1, queueId1 can construct {@link MessageQueue}
-     */
-    public static final String TOPIC_QUEUES_CONFIG = "topicQueues";
 
     /**
      * Connector name of current task.
@@ -94,26 +75,20 @@ public class WorkerSinkTask implements WorkerTask {
      * The configs of current sink task.
      */
     private ConnectKeyValue taskConfig;
-
-
     /**
      * Atomic state variable
      */
     private AtomicReference<WorkerTaskState> state;
 
-    /**
-     * Stop retry limit
-     */
-
-
+    //启动定时任务提交位移 共享这个单线程
+    private ScheduledExecutorService scheduledExecutorService = Executors.newScheduledThreadPool(1);
 
     /**
      * A RocketMQ consumer to pull message from MQ.
      */
-    private final DefaultMQPullConsumer consumer;
+    private final DefaultMQPullConsumer consumerPullRocketMQ;
 
     private final PositionManagementService offsetManagementService;
-
     /**
      *
      */
@@ -131,30 +106,35 @@ public class WorkerSinkTask implements WorkerTask {
      */
     private final ConcurrentHashMap<MessageQueue, QueueState> messageQueuesStateMap;
 
-    private static final Integer TIMEOUT = 3 * 1000;
-
-    private static final Integer MAX_MESSAGE_NUM = 32;
 
     private static final String COMMA = ",";
-    private static final String SEMICOLON = ";";
 
-    public static final String OFFSET_COMMIT_TIMEOUT_MS_CONFIG = "offset.flush.timeout.ms";
-
-    private long nextCommitTime = 0;
+    private long lastCommitTime = 0;
 
     private final AtomicReference<WorkerState> workerState;
 
+    private final ClassLoader classLoader;
+
+    final ReentrantReadWriteLock readWriteLock = new ReentrantReadWriteLock(true);
+
+    /**
+     * 避免GC
+     */
+    private static final Integer MAX_MESSAGE_NUM = 64;
+    final List<SinkDataEntry> sinkDataEntries = new ArrayList<>(MAX_MESSAGE_NUM);
+
     public WorkerSinkTask(String connectorName,
-        SinkTask sinkTask,
-        ConnectKeyValue taskConfig,
-        PositionManagementService offsetManagementService,
-        Converter recordConverter,
-        DefaultMQPullConsumer consumer,
-        AtomicReference<WorkerState> workerState) {
+                          SinkTask sinkTask,
+                          ConnectKeyValue taskConfig,
+                          PositionManagementService offsetManagementService,
+                          Converter recordConverter,
+                          DefaultMQPullConsumer consumerPullRocketMQ,
+                          AtomicReference<WorkerState> workerState,
+                          ClassLoader classLoader) {
         this.connectorName = connectorName;
         this.sinkTask = sinkTask;
         this.taskConfig = taskConfig;
-        this.consumer = consumer;
+        this.consumerPullRocketMQ = consumerPullRocketMQ;
         this.offsetManagementService = offsetManagementService;
         this.offsetStorageReader = new PositionStorageReaderImpl(offsetManagementService);
         this.recordConverter = recordConverter;
@@ -162,6 +142,17 @@ public class WorkerSinkTask implements WorkerTask {
         this.messageQueuesStateMap = new ConcurrentHashMap<>(256);
         this.state = new AtomicReference<>(WorkerTaskState.NEW);
         this.workerState = workerState;
+        this.classLoader = classLoader;
+    }
+
+    public WorkerSinkTask(String connectorName,
+                          SinkTask sinkTask,
+                          ConnectKeyValue taskConfig,
+                          PositionManagementService offsetManagementService,
+                          Converter recordConverter,
+                          DefaultMQPullConsumer consumerPullRocketMQ,
+                          AtomicReference<WorkerState> workerState) {
+        this(connectorName,sinkTask,taskConfig,offsetManagementService,recordConverter, consumerPullRocketMQ,workerState,null);
     }
 
     /**
@@ -169,104 +160,27 @@ public class WorkerSinkTask implements WorkerTask {
      */
     @Override
     public void run() {
+
+        Plugin.compareAndSwapLoaders(this.classLoader);
+
+        state.compareAndSet(WorkerTaskState.NEW, WorkerTaskState.PENDING);
+        log.info(String.format("Sink task is pending, config:%s",this));
+        Throwable exception = null;
+        //pending area
+        ClassLoader currentLoader = Thread.currentThread().getContextClassLoader();
         try {
-            consumer.start();
-            log.info("Sink task consumer start.");
-            state.compareAndSet(WorkerTaskState.NEW, WorkerTaskState.PENDING);
             sinkTask.initialize(new SinkTaskContext() {
                 /**
                  * Reset the consumer offset for the given queue.
                  */
                 @Override
-                public void resetOffset(QueueMetaData queueMetaData, Long offset) {
-                    String shardingKey = queueMetaData.getShardingKey();
-                    String queueName = queueMetaData.getQueueName();
-                    if (StringUtils.isNotEmpty(shardingKey) && StringUtils.isNotEmpty(queueName)) {
-                        String[] s = shardingKey.split(COMMA);
-                        if (s.length == 2 && StringUtils.isNotEmpty(s[0]) && StringUtils.isNotEmpty(s[1])) {
-                            String brokerName = s[0];
-                            Integer queueId = Integer.valueOf(s[1]);
-                            MessageQueue messageQueue = new MessageQueue(queueName, brokerName, queueId);
-                            messageQueuesOffsetMap.put(messageQueue, offset);
-                            //放到这里以后,会定时同步到rocketMQ上去
-                            offsetManagementService.putPosition(convertToByteBufferKey(messageQueue), convertToByteBufferValue(offset));
-                            return;
-                        }
-                    }
-                    log.warn("Missing parameters, queueMetaData {}", queueMetaData);
-                }
-
+                public void resetOffset(QueueMetaData queueMetaData, Long offset) {}
                 @Override
-                public void resetOffset(Map<QueueMetaData, Long> offsets) {
-                    for (Map.Entry<QueueMetaData, Long> entry : offsets.entrySet()) {
-                        String shardingKey = entry.getKey().getShardingKey();
-                        String queueName = entry.getKey().getQueueName();
-                        if (StringUtils.isNotEmpty(shardingKey) && StringUtils.isNotEmpty(queueName)) {
-                            String[] s = shardingKey.split(COMMA);
-                            if (s.length == 2 && StringUtils.isNotEmpty(s[0]) && StringUtils.isNotEmpty(s[1])) {
-                                String brokerName = s[0];
-                                Integer queueId = Integer.valueOf(s[1]);
-                                MessageQueue messageQueue = new MessageQueue(queueName, brokerName, queueId);
-                                messageQueuesOffsetMap.put(messageQueue, entry.getValue());
-                                //放到这里以后,会定时同步到rocketMQ上去
-                                offsetManagementService.putPosition(convertToByteBufferKey(messageQueue), convertToByteBufferValue(entry.getValue()));
-                                continue;
-                            }
-                        }
-                        log.warn("Missing parameters, queueMetaData {}", entry.getKey());
-                    }
-                }
-
-                /**
-                 * 暂停消费 注意queueMetaData.getShardingKey()的格式是 brokerName,queueID 如 master-1
-                 * @param queueMetaDatas
-                 */
+                public void resetOffset(Map<QueueMetaData, Long> offsets) {}
                 @Override
-                public void pause(List<QueueMetaData> queueMetaDatas) {
-                    if (null != queueMetaDatas && queueMetaDatas.size() > 0) {
-                        for (QueueMetaData queueMetaData : queueMetaDatas) {
-                            String shardingKey = queueMetaData.getShardingKey();
-                            String queueName = queueMetaData.getQueueName();
-                            if (StringUtils.isNotEmpty(shardingKey) && StringUtils.isNotEmpty(queueName)) {
-                                String[] s = shardingKey.split(COMMA);
-                                if (s.length == 2 && StringUtils.isNotEmpty(s[0]) && StringUtils.isNotEmpty(s[1])) {
-                                    String brokerName = s[0];
-                                    Integer queueId = Integer.valueOf(s[1]);
-                                    MessageQueue messageQueue = new MessageQueue(queueName, brokerName, queueId);
-                                    messageQueuesStateMap.put(messageQueue, QueueState.PAUSE);
-                                    continue;
-                                }
-                            }
-                            log.warn("Missing parameters, queueMetaData {}", queueMetaData);
-                        }
-                    }
-                }
-
-                /**
-                 * 恢复消费
-                 * @param queueMetaDatas
-                 */
+                public void pause(List<QueueMetaData> queueMetaDatas) {}
                 @Override
-                public void resume(List<QueueMetaData> queueMetaDatas) {
-                    if (null != queueMetaDatas && queueMetaDatas.size() > 0) {
-                        for (QueueMetaData queueMetaData : queueMetaDatas) {
-                            String shardingKey = queueMetaData.getShardingKey();
-                            String queueName = queueMetaData.getQueueName();
-                            if (StringUtils.isNotEmpty(shardingKey) && StringUtils.isNotEmpty(queueName)) {
-                                String[] s = shardingKey.split(COMMA);
-                                if (s.length == 2 && StringUtils.isNotEmpty(s[0]) && StringUtils.isNotEmpty(s[1])) {
-                                    String brokerName = s[0];
-                                    Integer queueId = Integer.valueOf(s[1]);
-                                    MessageQueue messageQueue = new MessageQueue(queueName, brokerName, queueId);
-                                    messageQueuesStateMap.remove(messageQueue);
-                                    continue;
-                                }
-                            }
-                            log.warn("Missing parameters, queueMetaData {}", queueMetaData);
-                        }
-                    }
-                }
-
+                public void resume(List<QueueMetaData> queueMetaDatas) {}
                 @Override
                 public KeyValue configs() {
                     return taskConfig;
@@ -274,158 +188,203 @@ public class WorkerSinkTask implements WorkerTask {
             });
 
             String topicNamesStr = taskConfig.getString(QUEUENAMES_CONFIG);
-            String topicQueuesStr = taskConfig.getString(TOPIC_QUEUES_CONFIG);
+            //自定义的sink offset
+            Consumer<String> updateOffsetByStore = topic -> {
 
-            if (!StringUtils.isEmpty(topicNamesStr)) {
-                String[] topicNames = topicNamesStr.split(COMMA);
-                for (String topicName : topicNames) {
-                    final Set<MessageQueue> messageQueues = consumer.fetchSubscribeMessageQueues(topicName);
-                    for (MessageQueue messageQueue : messageQueues) {
-                        final long offset = consumer.searchOffset(messageQueue, TIMEOUT);
-                        //每个queue的当前消费组的消费位移,这个消费位移是从RocketMQ的角度来看的。
-                        messageQueuesOffsetMap.put(messageQueue, offset);
+                for (Map.Entry<MessageQueue, Long> entry : messageQueuesOffsetMap.entrySet()) {
+                    MessageQueue messageQueue = entry.getKey();
+                    //读真正的rocketMQ上存储的自定义的sink端消费偏移量
+                    if (messageQueue.getTopic().equals(topic) || topic==null) {
+                        ByteBuffer byteBuffer = offsetStorageReader.getPosition(convertToByteBufferKey(messageQueue));
+                        if (null != byteBuffer) {
+                            //这里为什么又要把messageQueuesOffsetMap的偏移量覆盖掉呢？
+                            //是因为刚刚put的offset是rocketMQ的角度看的，而这里的offset是sink端处理的消费位移，这两个未必一样，所以如果sink处理失败，还是以sink的位移为准咯
+                            messageQueuesOffsetMap.put(messageQueue, convertToOffset(byteBuffer));
+                        }
                     }
-                    //一个topic下的所有的queue
-                    messageQueues.addAll(messageQueues);
                 }
-                log.debug("{} Initializing and starting task for topicNames {}", this, topicNames);
-            } else if (!StringUtils.isEmpty(topicQueuesStr)) {
-                //另一种方式，直接指定要消费的topic和broker和queueid
-                String[] topicQueues = topicQueuesStr.split(SEMICOLON);
-                for (String messageQueueStr : topicQueues) {
-                    String[] items = messageQueueStr.split(COMMA);
-                    if (items.length != 3) {
-                        log.error("Topic queue format error, topicQueueStr : " + topicNamesStr);
-                        return;
-                    }
-                    //use topicName1, brokerName1, queueId1 can construct {@link MessageQueue}
-                    MessageQueue messageQueue = new MessageQueue(items[0], items[1], Integer.valueOf(items[2]));
-                    final long offset = consumer.searchOffset(messageQueue, TIMEOUT);
-                    messageQueuesOffsetMap.put(messageQueue, offset);
-                }
-            } else {
-                log.error("Lack of sink comsume topicNames config");
-                state.set(WorkerTaskState.ERROR);
-                return;
-            }
-
-            for (Map.Entry<MessageQueue, Long> entry : messageQueuesOffsetMap.entrySet()) {
-                MessageQueue messageQueue = entry.getKey();
-                ByteBuffer byteBuffer = offsetStorageReader.getPosition(convertToByteBufferKey(messageQueue));
-                if (null != byteBuffer) {
-                    //TODO 这里为什么又要把messageQueuesOffsetMap的偏移量覆盖掉呢？
-                    //应该是因为刚刚put的offset是rocketMQ的角度看的，而这里的offset是sink端处理的消费位移，这两个未必一样，所以如果sink处理失败，还是以sink的位移为准咯
-                    //所以应该去sink提交位移的地方看看那里是什么情况
-                    messageQueuesOffsetMap.put(messageQueue, convertToOffset(byteBuffer));
-                }
-            }
-
-
+            };
             sinkTask.start(taskConfig);
-            // we assume executed here means we are safe
-            log.info("Sink task start, config:{}", JSON.toJSONString(taskConfig));
+
+            String[] topicNames = topicNamesStr.split(COMMA);
+            for (String topicName : topicNames) {
+                consumerPullRocketMQ.registerMessageQueueListener(topicName, new MessageQueueListener() {
+                    /**
+                     * @param mqDivided 分配给自己的
+                     */
+                    @Override
+                    public void messageQueueChanged(String topic, Set<MessageQueue> mqAll, Set<MessageQueue> mqDivided) {
+                        //负载均衡发生时先提交一次位移,但此时消息还在拉取。所以考虑加个lock锁一下,此时别的节点可能已经开始消费数据并提交位移了，但是别的节点的位移可能有点延迟，还比较早，就会发生重复
+                        readWriteLock.writeLock().lock();
+                        try {
+                            commitOffset();
+                            //只清空当前topic的queue
+                            if (messageQueuesOffsetMap.size()>0) {
+                                for (Map.Entry<MessageQueue, Long> entry : messageQueuesOffsetMap.entrySet()) {
+                                    if (entry.getKey().getTopic().equals(topic)) {
+                                        messageQueuesOffsetMap.remove(entry.getKey());
+                                    }
+                                }
+                            }
+
+                            for (MessageQueue messageQueue : mqDivided) {
+                                try {
+                                    final long offset = consumerPullRocketMQ.fetchConsumeOffset(messageQueue,true);
+                                    //因为rocketMQ是手动提交位移，且只提交messageQueuesOffsetMap的位移，也就意味着一定已经发送到kafka了
+                                    messageQueuesOffsetMap.put(messageQueue,offset);
+                                }catch (Exception ex){
+                                    log.error("consumer fetchConsumeOffset failed",ex);
+                                }
+                                //再用自定义的sink offset覆盖一下
+                                updateOffsetByStore.accept(topic);
+                            }
+                        }finally {
+                            readWriteLock.writeLock().unlock();
+                        }
+                    }
+                });
+            }
+            consumerPullRocketMQ.start();
+
+            scheduledExecutorService.scheduleWithFixedDelay(new Runnable() {
+                @Override
+                public void run() {
+                    commitOffset();
+                }
+            },3000,2000, TimeUnit.MILLISECONDS);
+
             state.compareAndSet(WorkerTaskState.PENDING, WorkerTaskState.RUNNING);
 
+            log.info(String.format("Sink task is running, config:%s",this));
+
+            //running area
             while (WorkerState.STARTED == workerState.get() && WorkerTaskState.RUNNING == state.get()) {
                 // this method can block up to 3 minutes long
-                pullMessageFromQueues();
+                if (messageQueuesOffsetMap.size()==0) {
+                    //没可以拉的queue就等1秒再拉
+                    Thread.sleep(1000);
+                    if (messageQueuesOffsetMap.size()==0) {
+                        continue;
+                    }
+                }
+                try {
+                    readWriteLock.readLock().lock();
+                    pullMessageFromQueues();
+                }finally {
+                    readWriteLock.readLock().unlock();
+                }
             }
 
-            sinkTask.stop();
-            state.compareAndSet(WorkerTaskState.STOPPING, WorkerTaskState.STOPPED);
-            log.info("Sink task stop, config:{}", JSON.toJSONString(taskConfig));
 
+            //normally stop area
+            state.compareAndSet(WorkerTaskState.RUNNING, WorkerTaskState.STOPPING);
+            log.info(String.format("Sink task is stopping, config:%s",this));
         } catch (Exception e) {
-            log.error("Run task failed.", e);
-            state.set(WorkerTaskState.ERROR);
+            log.info(String.format("Sink task is error, config:%s",this),e);
+            state.compareAndSet(WorkerTaskState.RUNNING, WorkerTaskState.ERROR);
+            exception = e;
         } finally {
-            if (consumer != null) {
-                consumer.shutdown();
-                log.info("Sink task consumer shutdown.");
+            //release resource area
+            try{
+                scheduledExecutorService.shutdown();
+                scheduledExecutorService.awaitTermination(2 * 1000 * 60, TimeUnit.MILLISECONDS);
+            }catch (Exception ex){
+                log.warn("",ex);
             }
+
+            try {
+                commitOffset();
+            }catch (Exception ex){
+                log.error("sink task commitOffset when stop failed",ex);
+            }
+
+            try {
+                consumerPullRocketMQ.shutdown();
+            }catch (Exception ex){
+                log.error("",ex);
+            }
+
+            try {
+                //sinkTask也要关闭啊 ，这源码写的问题也太多了把。
+                sinkTask.stop();
+            }catch (Exception ex){
+                log.error("",ex);
+            }
+
+            state.compareAndSet(WorkerTaskState.STOPPING, WorkerTaskState.STOPPED);
+
+            if (exception==null) {
+                log.info(String.format("Sink task is stopped, config:%s",this));
+            }else{
+                log.error(String.format("Sink task is stopped cuz error, config:%s",this),exception);
+            }
+            Plugin.compareAndSwapLoaders(currentLoader);
         }
     }
 
     private void pullMessageFromQueues() throws MQClientException, RemotingException, MQBrokerException, InterruptedException {
-        long startTimeStamp = System.currentTimeMillis();
-        log.info("START pullMessageFromQueues, time started : {}", startTimeStamp);
+        log.debug("START pullMessageFromQueues...");
         for (Map.Entry<MessageQueue, Long> entry : messageQueuesOffsetMap.entrySet()) {
             if (messageQueuesStateMap.containsKey(entry.getKey())) {
                 continue;
             }
-            log.info("START pullBlockIfNotFound, time started : {}", System.currentTimeMillis());
 
             if (WorkerTaskState.RUNNING != state.get()) {
                 break;
             }
-            final PullResult pullResult = consumer.pullBlockIfNotFound(entry.getKey(), "*", entry.getValue(), MAX_MESSAGE_NUM);
-            long currentTime = System.currentTimeMillis();
+            final PullResult pullResult = consumerPullRocketMQ.pull(entry.getKey(), "*", entry.getValue(), MAX_MESSAGE_NUM);
 
-            log.info("INSIDE pullMessageFromQueues, time elapsed : {}", currentTime - startTimeStamp);
             if (pullResult.getPullStatus().equals(PullStatus.FOUND)) {
+                //log.info("pull offset " + entry.getValue());
                 final List<MessageExt> messages = pullResult.getMsgFoundList();
-                //调用sink.put()进行处理,如果这里抛出异常，那么就下面也不会走了
-                receiveMessages(messages);
-                //更新消费位移
+                //调用sink.put()进行处理,如果这里抛出异常，那么就下面也不会走了。只要这里不抛异常,后面正常提交位移发到rocketMQ上面去
+                //如果抛出异常，那么不会提交位移
+                try {
+                    receiveMessages(messages);
+                }catch (Exception ex){
+                    //如果抛出异常,每个Queue按照之前的offset再重新消费一次 直到成功或者任务被手动终止
+                    //TODO 发送到告警信息里面
+                    throw new RuntimeException("receiveMessages failed",ex);
+                }
+                //更新消费位移,如果此时已经发生重平衡,原先的queue不属于自己了,那么位移还是要提交的。这里一定会造成消息重复。另外原本的rocketMQ的offset提交机制应该也会重复。
                 messageQueuesOffsetMap.put(entry.getKey(), pullResult.getNextBeginOffset());
-                //放到这个service里面的会同步到rocketMQ上其他节点
+                //放到这个service里面的会同步到rocketMQ上其他节点 有必要吗？大家都是同一个消费组，既然是同一个消费组那么位移本来就在broker有保存，何必同步给其他节点？
                 offsetManagementService.putPosition(convertToByteBufferKey(entry.getKey()), convertToByteBufferValue(pullResult.getNextBeginOffset()));
-                preCommit();
+            }else{
+                try {
+                    Thread.sleep(500);
+                } catch (InterruptedException e) {}
             }
         }
     }
 
     /**
-     * 其实就是又把messageQueuesOffsetMap的kv包装一下然后达到指定commitInterval间隔就调用一次
+     * rocketMQ本身的消费位移必须持久化，因为rocketMQ的消息是会过期删除的，比如7天后再连上来，变成重头开始消费了显然不行。
+     * 另外自己上线以后，会发ONLINE消息出去，然后别的节点收到消息就会推一次offset的消息过来，本节点就可以直接更新缓存了，因为本地json文件肯定是落后了一点点它是定时持久化的
      */
-    private void preCommit() {
-        long commitInterval = taskConfig.getLong(OFFSET_COMMIT_TIMEOUT_MS_CONFIG, 1000);
-        if (nextCommitTime <= 0) {
-            long now = System.currentTimeMillis();
-            nextCommitTime = now + commitInterval;
-        }
-        if (nextCommitTime < System.currentTimeMillis()) {
-            Map<QueueMetaData, Long> queueMetaDataLongMap = new HashMap<>(512);
-            if (messageQueuesOffsetMap.size() > 0) {
-                for (Map.Entry<MessageQueue, Long> messageQueueLongEntry : messageQueuesOffsetMap.entrySet()) {
-                    QueueMetaData queueMetaData = new QueueMetaData();
-                    queueMetaData.setQueueName(messageQueueLongEntry.getKey().getTopic());
-                    queueMetaData.setShardingKey(messageQueueLongEntry.getKey().getBrokerName() + COMMA + messageQueueLongEntry.getKey().getQueueId());
-                    queueMetaDataLongMap.put(queueMetaData, messageQueueLongEntry.getValue());
+    private void commitOffset() {
+        readWriteLock.readLock().lock();
+        try {
+            //提交位移,对于fileSinkTask而言，这个就是调用一个flush操作,应该只是一个钩子函数，理论上sink端的位移提交框架要自动处理的.这里注掉，完全没用
+            for (Map.Entry<MessageQueue, Long/*下次要消费的位移位置*/> entry : messageQueuesOffsetMap.entrySet()) {
+                try {
+                    if (entry.getValue()==null) {
+                        continue;
+                    }
+                    consumerPullRocketMQ.updateConsumeOffset(entry.getKey(),entry.getValue());
+                } catch (MQClientException e) {
+                    log.error("updateConsumeOffset offset failed",e);
                 }
             }
-            //提交位移,对于fileSinkTask而言，这个就是调用一个flush操作。不是很懂为社么需要这一步，直接在上面offsetManagementService.putPosition不就已经commit了吗
-            sinkTask.preCommit(queueMetaDataLongMap);
-            nextCommitTime = 0;
+        }finally {
+            readWriteLock.readLock().unlock();
         }
+        log.debug("workSinkTask commit offset finish...");
     }
-
-    private void removePauseQueueMessage(MessageQueue messageQueue, List<MessageExt> messages) {
-        if (null != messageQueuesStateMap.get(messageQueue)) {
-            final Iterator<MessageExt> iterator = messages.iterator();
-            while (iterator.hasNext()) {
-                final MessageExt message = iterator.next();
-                String msgId = message.getMsgId();
-                log.info("BrokerName {}, topicName {}, queueId {} is pause, Discard the message {}", messageQueue.getBrokerName(), messageQueue.getTopic(), message.getQueueId(), msgId);
-                iterator.remove();
-            }
-        }
-    }
-
-
     @Override
     public void stop() {
+        log.info(String.format("task with config:{%s} will stop",this));
         state.compareAndSet(WorkerTaskState.RUNNING, WorkerTaskState.STOPPING);
-    }
-
-    @Override
-    public void cleanup() {
-        if (state.compareAndSet(WorkerTaskState.STOPPED, WorkerTaskState.TERMINATED) ||
-            state.compareAndSet(WorkerTaskState.ERROR, WorkerTaskState.TERMINATED))
-            consumer.shutdown();
-        else {
-            log.error("[BUG] cleaning a task but it's not in STOPPED or ERROR state");
-        }
     }
 
     /**
@@ -434,60 +393,49 @@ public class WorkerSinkTask implements WorkerTask {
      * @param messages
      */
     private void receiveMessages(List<MessageExt> messages) {
-        List<SinkDataEntry> sinkDataEntries = new ArrayList<>(32);
         for (MessageExt message : messages) {
+            long queueOffset = message.getQueueOffset();
+            if (log.isDebugEnabled()) {
+                log.debug("Sink Received one message:", new String(message.getBody()==null?new byte[0]:message.getBody()));
+            }
             SinkDataEntry sinkDataEntry = convertToSinkDataEntry(message);
             sinkDataEntries.add(sinkDataEntry);
-            String msgId = message.getMsgId();
-            log.info("Received one message success : msgId {}", msgId);
         }
         sinkTask.put(sinkDataEntries);
+        sinkDataEntries.clear();
     }
 
+    /**
+     * 原来的是OLD结尾,这里处理一下,拉下来的消息就是普通消息，不是SourceDataEntry.
+     * 如果是老的kafka sender改造为rocketMQ,那么理论上应该可以完美从rocketMQ消息格式转换到kafka格式再发回去，tags理论上没用，注意kafka消息的header和key正常转换即可
+     * 如果是sender直接利用了rocketMQ发送全新的消息用了新的特性例如tags，那么对方也不会去kafka消费这条消息，也没关系。所以不需要支持tags
+     * @param message
+     * @return
+     */
     private SinkDataEntry convertToSinkDataEntry(MessageExt message) {
+        String topic = message.getTopic();
+        String keys = message.getKeys();
+        byte[] body = message.getBody();
         Map<String, String> properties = message.getProperties();
-        String queueName;
-        EntryType entryType;
-        Schema schema;
-        Long timestamp;
-        Object[] datas = new Object[1];
-        if (null == recordConverter || recordConverter instanceof RocketMQConverter) {
-            queueName = properties.get(RuntimeConfigDefine.CONNECT_TOPICNAME);
-            String connectEntryType = properties.get(RuntimeConfigDefine.CONNECT_ENTRYTYPE);
-            entryType = StringUtils.isNotEmpty(connectEntryType) ? EntryType.valueOf(connectEntryType) : null;
-            String connectTimestamp = properties.get(RuntimeConfigDefine.CONNECT_TIMESTAMP);
-            timestamp = StringUtils.isNotEmpty(connectTimestamp) ? Long.valueOf(connectTimestamp) : null;
-            String connectSchema = properties.get(RuntimeConfigDefine.CONNECT_SCHEMA);
-            schema = StringUtils.isNotEmpty(connectSchema) ? JSON.parseObject(connectSchema, Schema.class) : null;
-            datas = new Object[1];
-            datas[0] = message.getBody();
-        } else {
-            final byte[] messageBody = message.getBody();
-            final SourceDataEntry sourceDataEntry = JSON.parseObject(new String(messageBody), SourceDataEntry.class);
-            final Object[] payload = sourceDataEntry.getPayload();
-            final byte[] decodeBytes = Base64.getDecoder().decode((String) payload[0]);
-            Object recodeObject;
-            if (recordConverter instanceof JsonConverter) {
-                JsonConverter jsonConverter = (JsonConverter) recordConverter;
-                jsonConverter.setClazz(Object[].class);
-                recodeObject = recordConverter.byteToObject(decodeBytes);
-                datas = (Object[]) recodeObject;
-            }
-            schema = sourceDataEntry.getSchema();
-            entryType = sourceDataEntry.getEntryType();
-            queueName = sourceDataEntry.getQueueName();
-            timestamp = sourceDataEntry.getTimestamp();
-        }
+
+        Schema schema = new Schema();
+        List<Field> fields = new ArrayList<>();
+        fields.add(new Field(0, "key", FieldType.STRING));
+        fields.add(new Field(1, "value", FieldType.BYTES));
+        fields.add(new Field(2, "header", FieldType.MAP));
+        schema.setName(topic);
+        schema.setFields(fields);
+        schema.setDataSource(topic);
+
         DataEntryBuilder dataEntryBuilder = new DataEntryBuilder(schema);
-        dataEntryBuilder.entryType(entryType);
-        dataEntryBuilder.queue(queueName);
-        dataEntryBuilder.timestamp(timestamp);
-        List<Field> fields = schema.getFields();
-        if (null != fields && !fields.isEmpty()) {
-            for (Field field : fields) {
-                dataEntryBuilder.putFiled(field.getName(), datas[field.getIndex()]);
-            }
-        }
+        dataEntryBuilder.entryType(EntryType.CREATE);
+        dataEntryBuilder.queue(topic);
+        dataEntryBuilder.timestamp(System.currentTimeMillis());
+
+        dataEntryBuilder.putFiled("key",keys);
+        dataEntryBuilder.putFiled("value",body);
+        dataEntryBuilder.putFiled("header",properties);
+
         SinkDataEntry sinkDataEntry = dataEntryBuilder.buildSinkDataEntry(message.getQueueOffset());
         return sinkDataEntry;
     }
@@ -507,30 +455,22 @@ public class WorkerSinkTask implements WorkerTask {
         return taskConfig;
     }
 
-
-    /**
-     * Further we cant try to log what caused the error
-     */
-    @Override
-    public void timeout() {
-        this.state.set(WorkerTaskState.ERROR);
-    }
     @Override
     public String toString() {
-
-        StringBuilder sb = new StringBuilder();
-        sb.append("connectorName:" + connectorName)
-            .append("\nConfigs:" + JSON.toJSONString(taskConfig))
-            .append("\nState:" + state.get().toString());
-        return sb.toString();
+        Map map = new LinkedHashMap();
+        map.put("connectorName", connectorName);
+        map.put("configs", taskConfig);
+        map.put("State", state.get().toString());
+        return "\n"+JSON.toJSONString(map, SerializerFeature.PrettyFormat);
     }
 
     @Override
     public Object getJsonObject() {
         HashMap obj = new HashMap<String, Object>();
         obj.put("connectorName", connectorName);
-        obj.put("configs", JSON.toJSONString(taskConfig));
+        obj.put("taskConfig", taskConfig);
         obj.put("state", state.get().toString());
+        obj.put("workerId", ConnectController.getInstance().getConnectConfig().getWorkerId());
         return obj;
     }
 

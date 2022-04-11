@@ -78,7 +78,7 @@ public class GetAllocatedTasks implements SubCommand {
                 ConnectKeyValue keyValue = stringToKeyValue(jsonObject.getJSONObject("configs").getString("properties"));
                 String[] taskNameTmp = keyValue.getString("task-class").split("\\.");
                 String taskName = taskNameTmp[taskNameTmp.length - 1];
-                String taskId = keyValue.getString("task-id");
+                String taskId = keyValue.getString("sys_task-id");
                 String topic;
                 if (keyValue.getString("topic") != null) {
                     topic = keyValue.getString("topic");

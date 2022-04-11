@@ -18,6 +18,7 @@
 package org.apache.rocketmq.connect.runtime.connectorwrapper;
 
 import com.alibaba.fastjson.JSON;
+import com.alibaba.fastjson.serializer.SerializerFeature;
 import io.openmessaging.KeyValue;
 import io.openmessaging.connector.api.PositionStorageReader;
 import io.openmessaging.connector.api.common.QueueMetaData;
@@ -30,12 +31,10 @@ import io.openmessaging.connector.api.sink.SinkTaskContext;
 import io.openmessaging.connector.api.source.SourceTask;
 import io.openmessaging.connector.api.source.SourceTaskContext;
 import java.nio.ByteBuffer;
-import java.util.ArrayList;
-import java.util.Collection;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 import java.util.concurrent.atomic.AtomicReference;
+
+import org.apache.rocketmq.connect.runtime.ConnectController;
 import org.apache.rocketmq.connect.runtime.common.ConnectKeyValue;
 import org.apache.rocketmq.connect.runtime.common.LoggerName;
 import org.apache.rocketmq.connect.runtime.service.PositionManagementService;
@@ -144,8 +143,8 @@ public class WorkerDirectTask implements WorkerTask {
             }
             SinkDataEntry sinkDataEntry = dataEntryBuilder.buildSinkDataEntry(-1L);
             sinkDataEntries.add(sinkDataEntry);
-            position = sourceDataEntry.getSourcePosition();
-            partition = sourceDataEntry.getSourcePartition();
+            position = sourceDataEntry.getSourcePosition();//string
+            partition = sourceDataEntry.getSourcePartition();//string
         }
 
         try {
@@ -199,6 +198,15 @@ public class WorkerDirectTask implements WorkerTask {
         log.info("Sink task stop, config:{}", JSON.toJSONString(taskConfig));
     }
 
+    @Override
+    public String toString() {
+        Map map = new LinkedHashMap();
+        map.put("connectorName", connectorName);
+        map.put("configs", taskConfig);
+        map.put("State", state.get().toString());
+        return "\n"+JSON.toJSONString(map, SerializerFeature.PrettyFormat);
+    }
+
     private void startSourceTask() {
         state.compareAndSet(WorkerTaskState.NEW, WorkerTaskState.PENDING);
         sourceTask.initialize(new SourceTaskContext() {
@@ -233,15 +241,6 @@ public class WorkerDirectTask implements WorkerTask {
     }
 
     @Override
-    public void cleanup() {
-        if (state.compareAndSet(WorkerTaskState.STOPPED, WorkerTaskState.TERMINATED) ||
-            state.compareAndSet(WorkerTaskState.ERROR, WorkerTaskState.TERMINATED)) {
-        } else {
-            log.error("[BUG] cleaning a task but it's not in STOPPED or ERROR state");
-        }
-    }
-
-    @Override
     public String getConnectorName() {
         return connectorName;
     }
@@ -255,13 +254,9 @@ public class WorkerDirectTask implements WorkerTask {
     public Object getJsonObject() {
         HashMap obj = new HashMap<String, Object>();
         obj.put("connectorName", connectorName);
-        obj.put("configs", JSON.toJSONString(taskConfig));
+        obj.put("taskConfig", taskConfig);
         obj.put("state", state.get().toString());
+        obj.put("workerId", ConnectController.getInstance().getConnectConfig().getWorkerId());
         return obj;
-    }
-
-    @Override
-    public void timeout() {
-        this.state.set(WorkerTaskState.ERROR);
     }
 }

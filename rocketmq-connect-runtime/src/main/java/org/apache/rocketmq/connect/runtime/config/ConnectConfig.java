@@ -17,13 +17,14 @@
 
 package org.apache.rocketmq.connect.runtime.config;
 
+import org.apache.rocketmq.connect.runtime.service.strategy.DefaultAllocateTaskStrategy;
+
 import java.io.File;
 
 /**
  * Configurations for runtime.
  */
 public class ConnectConfig {
-
     /**
      * The unique ID of each worker instance in the cluster
      */
@@ -90,12 +91,12 @@ public class ConnectConfig {
     /**
      * Source task position persistence interval.
      */
-    private int positionPersistInterval = 20 * 1000;
+    private int positionPersistInterval = 15 * 1000;
 
     /**
      * Sink task offset persistence interval.
      */
-    private int offsetPersistInterval = 20 * 1000;
+    private int offsetPersistInterval = 15 * 1000;
 
     /**
      * Connector configuration persistence interval.
@@ -104,9 +105,9 @@ public class ConnectConfig {
 
     private String pluginPaths;
 
-    private String connectClusterId = "DefaultConnectCluster";
+    private String connectClusterId = "connector-cluster-group";
 
-    private String allocTaskStrategy = "org.apache.rocketmq.connect.runtime.service.strategy.DefaultAllocateConnAndTaskStrategy";
+    private String allocTaskStrategy = DefaultAllocateTaskStrategy.class.getName();
 
     private boolean aclEnable = false;
 

@@ -18,11 +18,17 @@
 package org.apache.rocketmq.connect.runtime.store;
 
 import com.alibaba.fastjson.JSON;
+import com.alibaba.fastjson.TypeReference;
+import com.alibaba.fastjson.serializer.SerializerFeature;
 import io.openmessaging.connector.api.data.Converter;
 import java.io.IOException;
+import java.nio.ByteBuffer;
 import java.util.Base64;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+
 import org.apache.rocketmq.connect.runtime.common.LoggerName;
 import org.apache.rocketmq.connect.runtime.utils.FileAndPropertyUtil;
 import org.slf4j.Logger;
@@ -39,40 +45,22 @@ public class FileBaseKeyValueStore<K, V> extends MemoryBasedKeyValueStore<K, V> 
     private static final Logger log = LoggerFactory.getLogger(LoggerName.ROCKETMQ_RUNTIME);
 
     private String configFilePath;
-    private Converter keyConverter;
-    private Converter valueConverter;
 
-    public FileBaseKeyValueStore(String configFilePath,
-        Converter keyConverter,
-        Converter valueConverter) {
+    private TypeReference typeReference;
 
+    public FileBaseKeyValueStore(String configFilePath,TypeReference typeReference) {
         super();
         this.configFilePath = configFilePath;
-        this.keyConverter = keyConverter;
-        this.valueConverter = valueConverter;
+        this.typeReference = typeReference;
     }
 
-    public String encode() {
 
-        Map<String, String> map = new HashMap<>();
-        for (K key : data.keySet()) {
-            byte[] keyByte = keyConverter.objectToByte(key);
-            byte[] valueByte = valueConverter.objectToByte(data.get(key));
-            map.put(Base64.getEncoder().encodeToString(keyByte), Base64.getEncoder().encodeToString(valueByte));
-        }
-        return JSON.toJSONString(map);
+    protected String encode(Map<K,V> data) {
+        return JSON.toJSONString(data, SerializerFeature.PrettyFormat);
     }
 
-    public void decode(String jsonString) {
-
-        Map<K, V> resultMap = new HashMap<>();
-        Map<String, String> map = JSON.parseObject(jsonString, Map.class);
-        for (String key : map.keySet()) {
-            K decodeKey = (K) keyConverter.byteToObject(Base64.getDecoder().decode(key));
-            V decodeValue = (V) valueConverter.byteToObject(Base64.getDecoder().decode(map.get(key)));
-            resultMap.put(decodeKey, decodeValue);
-        }
-        this.data = resultMap;
+    protected Map<K,V> decode(String jsonString){
+        return (Map)JSON.parseObject(jsonString, typeReference);
     }
 
     @Override
@@ -85,7 +73,8 @@ public class FileBaseKeyValueStore<K, V> extends MemoryBasedKeyValueStore<K, V> 
             if (null == jsonString || jsonString.length() == 0) {
                 return this.loadBak();
             } else {
-                this.decode(jsonString);
+                Map<K, V> kvMap = this.decode(jsonString);
+                this.data.putAll(kvMap);
                 log.info("load " + fileName + " OK");
                 return true;
             }
@@ -101,7 +90,8 @@ public class FileBaseKeyValueStore<K, V> extends MemoryBasedKeyValueStore<K, V> 
             fileName = this.configFilePath;
             String jsonString = FileAndPropertyUtil.file2String(fileName + ".bak");
             if (jsonString != null && jsonString.length() > 0) {
-                this.decode(jsonString);
+                Map<K, V> kvMap = this.decode(jsonString);
+                this.data.putAll(kvMap);
                 log.info("load " + fileName + " OK");
                 return true;
             }
@@ -115,8 +105,7 @@ public class FileBaseKeyValueStore<K, V> extends MemoryBasedKeyValueStore<K, V> 
 
     @Override
     public void persist() {
-
-        String jsonString = this.encode();
+        String jsonString = this.encode(this.data);
         if (jsonString != null) {
             String fileName = this.configFilePath;
             try {

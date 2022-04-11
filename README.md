@@ -214,12 +214,12 @@ http://(your worker ip):(port)/connectors/(connector name)/delete
 * 默认值
   
   ```java
-  org.apache.rocketmq.connect.runtime.service.strategy.DefaultAllocateConnAndTaskStrategy
+  org.apache.rocketmq.connect.runtime.service.strategy.DefaultAllocateTaskStrategy
   ```
 * 一致性Hash
   
 ```java
-org.apache.rocketmq.connect.runtime.service.strategy.AllocateConnAndTaskStrategyByConsistentHash
+org.apache.rocketmq.connect.runtime.service.strategy.AllocateTaskStrategyByConsistentHash
 ```
 ### 更多集群和负载均衡文档
 

@@ -85,8 +85,7 @@ public class WorkerTest {
             connectKeyValue.getProperties().put("key2", "TEST-CONN-" + i + "2");
             workingConnectors.add(new WorkerConnector("TEST-CONN-" + i, new TestConnector(), connectKeyValue, connectorContext));
         }
-        worker.setWorkingConnectors(workingConnectors);
-        assertThat(worker.getWorkingConnectors().size()).isEqualTo(3);
+
 
         Set<Runnable> runnables = new HashSet<>();
         for (int i = 0; i < 3; i++) {
@@ -102,7 +101,7 @@ public class WorkerTest {
                 new AtomicReference(WorkerState.STARTED)
             ));
         }
-        worker.setWorkingTasks(runnables);
+        //worker.setWorkingTasks(runnables);
         assertThat(worker.getWorkingTasks().size()).isEqualTo(3);
 
         worker.start();
@@ -125,12 +124,6 @@ public class WorkerTest {
             connectorConfigs.put("TEST-CONN-" + i, connectKeyValue);
         }
 
-        worker.startConnectors(connectorConfigs, connectController);
-        Set<WorkerConnector> connectors = worker.getWorkingConnectors();
-        assertThat(connectors.size()).isEqualTo(3);
-        for (WorkerConnector wc : connectors) {
-            assertThat(wc.getConnectorName()).isIn("TEST-CONN-1", "TEST-CONN-2", "TEST-CONN-3");
-        }
     }
 
     @Test
@@ -150,9 +143,9 @@ public class WorkerTest {
             taskConfigs.put("TEST-CONN-" + i, connectKeyValues);
         }
 
-        worker.startTasks(taskConfigs);
+        worker.setTasks(taskConfigs);
 
-        Set<Runnable> sourceTasks = worker.getWorkingTasks();
+        Set<WorkerTask> sourceTasks = worker.getWorkingTasks();
         assertThat(sourceTasks.size()).isEqualTo(3);
         for (Runnable runnable : sourceTasks) {
             WorkerSourceTask workerSourceTask = null;

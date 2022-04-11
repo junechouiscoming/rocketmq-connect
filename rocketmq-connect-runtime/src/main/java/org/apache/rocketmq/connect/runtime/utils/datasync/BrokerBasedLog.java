@@ -105,6 +105,7 @@ public class BrokerBasedLog<K, V> implements DataSynchronizer<K, V> {
      */
     private void prepare(ConnectConfig connectConfig) {
         if (connectConfig.isAutoCreateGroupEnable()) {
+            log.info("create sub group:"+consumer.getConsumerGroup());
             ConnectUtil.createSubGroup(connectConfig, consumer.getConsumerGroup());
         }
     }
@@ -138,17 +139,17 @@ public class BrokerBasedLog<K, V> implements DataSynchronizer<K, V> {
             }
             producer.send(new Message(topicName, messageBody), new SendCallback() {
                 @Override public void onSuccess(org.apache.rocketmq.client.producer.SendResult result) {
-                    log.info("Send async message OK, msgId: {},topic:{}", result.getMsgId(), topicName);
+                    log.debug("Send SYS async message OK, msgId: {},topic:{}", result.getMsgId(), topicName);
                 }
 
                 @Override public void onException(Throwable throwable) {
                     if (null != throwable) {
-                        log.error("Send async message Failed, error: {}", throwable);
+                        log.error("Send SYS async message Failed, error: {}", throwable);
                     }
                 }
             });
         } catch (Exception e) {
-            log.error("BrokerBaseLog send async message Failed.", e);
+            log.error("BrokerBaseLog send SYS async message Failed.", e);
         }
     }
 
@@ -180,7 +181,7 @@ public class BrokerBasedLog<K, V> implements DataSynchronizer<K, V> {
         public ConsumeConcurrentlyStatus consumeMessage(List<MessageExt> rmqMsgList,
             ConsumeConcurrentlyContext context) {
             for (MessageExt messageExt : rmqMsgList) {
-                log.info("Received one message: {}, topic is {}", messageExt.getMsgId() + "\n", topicName);
+                log.debug("Received one message: {}, topic is {}", messageExt.getMsgId(), topicName);
                 byte[] bytes = messageExt.getBody();
                 Map<K, V> map;
                 try {

@@ -19,11 +19,11 @@ package org.apache.rocketmq.connect.runtime.service.strategy;
 
 import java.util.ArrayList;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
-import org.apache.rocketmq.connect.runtime.common.ConnAndTaskConfigs;
+
+import org.apache.rocketmq.connect.runtime.common.AllocateResultConfigs;
+import org.apache.rocketmq.connect.runtime.common.ConnectorAndTaskConfigs;
 import org.apache.rocketmq.connect.runtime.common.ConnectKeyValue;
 import org.junit.Test;
 
@@ -31,11 +31,11 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 
-public class DefaultAllocateConnAndTaskStrategyTest {
+public class DefaultAllocateTaskStrategyTest {
 
     @Test
     public void testAllocate() {
-        DefaultAllocateConnAndTaskStrategy defaultAllocateConnAndTaskStrategy = new DefaultAllocateConnAndTaskStrategy();
+        DefaultAllocateTaskStrategy defaultAllocateConnAndTaskStrategy = new DefaultAllocateTaskStrategy();
         List<String> allWorker = new ArrayList<String>() {
             {
                 add("workId1");
@@ -83,14 +83,8 @@ public class DefaultAllocateConnAndTaskStrategyTest {
                 put("connectorConfig3", taskConfig3);
             }
         };
-        ConnAndTaskConfigs allocate = defaultAllocateConnAndTaskStrategy.allocate(allWorker, curWorker, connectorConfigs, taskConfigs);
+        AllocateResultConfigs allocate = defaultAllocateConnAndTaskStrategy.allocate(allWorker, curWorker, taskConfigs);
         assertNotNull(allocate);
-        Map<String, ConnectKeyValue> connectorConfigs3 = allocate.getConnectorConfigs();
-        assertNotNull(connectorConfigs3);
-
-        assertNotNull(connectorConfigs3.get("connectorConfig3"));
-        assertNull(connectorConfigs3.get("connectorConfig2"));
-        assertNull(connectorConfigs3.get("connectorConfig1"));
 
         Map<String, List<ConnectKeyValue>> taskConfigs1 = allocate.getTaskConfigs();
         assertNotNull(taskConfigs1);

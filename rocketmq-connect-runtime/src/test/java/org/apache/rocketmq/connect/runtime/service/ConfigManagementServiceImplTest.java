@@ -28,7 +28,7 @@ import org.apache.rocketmq.client.consumer.DefaultMQPushConsumer;
 import org.apache.rocketmq.client.producer.DefaultMQProducer;
 import org.apache.rocketmq.client.producer.SendCallback;
 import org.apache.rocketmq.common.message.Message;
-import org.apache.rocketmq.connect.runtime.common.ConnAndTaskConfigs;
+import org.apache.rocketmq.connect.runtime.common.ConnectorAndTaskConfigs;
 import org.apache.rocketmq.connect.runtime.common.ConnectKeyValue;
 import org.apache.rocketmq.connect.runtime.config.ConnectConfig;
 import org.apache.rocketmq.connect.runtime.config.RuntimeConfigDefine;
@@ -58,7 +58,7 @@ public class ConfigManagementServiceImplTest {
     private KeyValueStore<String, ConnectKeyValue> connectorKeyValueStore;
     private KeyValueStore<String, List<ConnectKeyValue>> taskKeyValueStore;
     private Set<ConfigManagementService.ConnectorConfigUpdateListener> connectorConfigUpdateListener;
-    private DataSynchronizer<String, ConnAndTaskConfigs> dataSynchronizer;
+    private DataSynchronizer<String, ConnectorAndTaskConfigs> dataSynchronizer;
     private ConnectConfig connectConfig;
 
     @Mock
@@ -106,15 +106,15 @@ public class ConfigManagementServiceImplTest {
 
                 final Field dataSynchronizerField = ConfigManagementServiceImpl.class.getDeclaredField("dataSynchronizer");
                 dataSynchronizerField.setAccessible(true);
-                BrokerBasedLog<String, ConnAndTaskConfigs> dataSynchronizer = (BrokerBasedLog<String, ConnAndTaskConfigs>) dataSynchronizerField.get(configManagementService);
+                BrokerBasedLog<String, ConnectorAndTaskConfigs> dataSynchronizer = (BrokerBasedLog<String, ConnectorAndTaskConfigs>) dataSynchronizerField.get(configManagementService);
 
                 final Method decodeKeyValueMethod = BrokerBasedLog.class.getDeclaredMethod("decodeKeyValue", byte[].class);
                 decodeKeyValueMethod.setAccessible(true);
-                Map<String, ConnAndTaskConfigs> map = (Map<String, ConnAndTaskConfigs>) decodeKeyValueMethod.invoke(dataSynchronizer, bytes);
+                Map<String, ConnectorAndTaskConfigs> map = (Map<String, ConnectorAndTaskConfigs>) decodeKeyValueMethod.invoke(dataSynchronizer, bytes);
 
                 final Field dataSynchronizerCallbackField = BrokerBasedLog.class.getDeclaredField("dataSynchronizerCallback");
                 dataSynchronizerCallbackField.setAccessible(true);
-                final DataSynchronizerCallback<String, ConnAndTaskConfigs> dataSynchronizerCallback = (DataSynchronizerCallback<String, ConnAndTaskConfigs>) dataSynchronizerCallbackField.get(dataSynchronizer);
+                final DataSynchronizerCallback<String, ConnectorAndTaskConfigs> dataSynchronizerCallback = (DataSynchronizerCallback<String, ConnectorAndTaskConfigs>) dataSynchronizerCallbackField.get(dataSynchronizer);
                 for (String key : map.keySet()) {
                     dataSynchronizerCallback.onCompletion(null, key, map.get(key));
                 }
@@ -136,11 +136,11 @@ public class ConfigManagementServiceImplTest {
 
         final Field producerField = BrokerBasedLog.class.getDeclaredField("producer");
         producerField.setAccessible(true);
-        producerField.set((BrokerBasedLog<String, ConnAndTaskConfigs>) dataSynchronizerField.get(configManagementService), producer);
+        producerField.set((BrokerBasedLog<String, ConnectorAndTaskConfigs>) dataSynchronizerField.get(configManagementService), producer);
 
         final Field consumerField = BrokerBasedLog.class.getDeclaredField("consumer");
         consumerField.setAccessible(true);
-        consumerField.set((BrokerBasedLog<String, ConnAndTaskConfigs>) dataSynchronizerField.get(configManagementService), consumer);
+        consumerField.set((BrokerBasedLog<String, ConnectorAndTaskConfigs>) dataSynchronizerField.get(configManagementService), consumer);
 
         configManagementService.start();
     }
@@ -160,7 +160,7 @@ public class ConfigManagementServiceImplTest {
         assertNull(connectKeyValue1);
         assertNull(connectKeyValues);
 
-        configManagementService.putConnectorConfig(connectorName, connectKeyValue);
+        configManagementService.putNewConnectorConfig(connectorName, connectKeyValue);
 
         connectKeyValue1 = connectorKeyValueStore.get(connectorName);
         connectKeyValues = taskKeyValueStore.get(connectorName);
@@ -170,13 +170,13 @@ public class ConfigManagementServiceImplTest {
 
     @Test
     public void testGetConnectorConfigs() throws Exception {
-        Map<String, ConnectKeyValue> connectorConfigs = configManagementService.getConnectorConfigs();
+        Map<String, ConnectKeyValue> connectorConfigs = configManagementService.getConnectorConfigs(RuntimeConfigDefine.CONFIG_ENABLE_DISABLE_LST);
         ConnectKeyValue connectKeyValue = connectorConfigs.get(connectorName);
 
         assertNull(connectKeyValue);
 
-        configManagementService.putConnectorConfig(connectorName, this.connectKeyValue);
-        connectorConfigs = configManagementService.getConnectorConfigs();
+        configManagementService.putNewConnectorConfig(connectorName, this.connectKeyValue);
+        connectorConfigs = configManagementService.getConnectorConfigs(RuntimeConfigDefine.CONFIG_ENABLE_DISABLE_LST);
         connectKeyValue = connectorConfigs.get(connectorName);
 
         assertNotNull(connectKeyValue);
@@ -184,11 +184,11 @@ public class ConfigManagementServiceImplTest {
 
     @Test
     public void testRemoveConnectorConfig() throws Exception {
-        configManagementService.putConnectorConfig(connectorName, this.connectKeyValue);
-        Map<String, ConnectKeyValue> connectorConfigs = configManagementService.getConnectorConfigs();
+        configManagementService.putNewConnectorConfig(connectorName, this.connectKeyValue);
+        Map<String, ConnectKeyValue> connectorConfigs = configManagementService.getConnectorConfigs(RuntimeConfigDefine.CONFIG_ENABLE_DISABLE_LST);
         ConnectKeyValue connectKeyValue = connectorConfigs.get(connectorName);
 
-        Map<String, List<ConnectKeyValue>> taskConfigs = configManagementService.getTaskConfigs();
+        Map<String, List<ConnectKeyValue>> taskConfigs = configManagementService.getTaskConfigs(RuntimeConfigDefine.CONFIG_ENABLE_DISABLE_LST);
         List<ConnectKeyValue> connectKeyValues = taskConfigs.get(connectorName);
 
         assertNotNull(connectKeyValue);
@@ -196,9 +196,9 @@ public class ConfigManagementServiceImplTest {
 
         configManagementService.removeConnectorConfig(connectorName);
 
-        connectorConfigs = configManagementService.getConnectorConfigs();
+        connectorConfigs = configManagementService.getConnectorConfigs(RuntimeConfigDefine.CONFIG_ENABLE_DISABLE_LST);
         connectKeyValue = connectorConfigs.get(connectorName);
-        taskConfigs = configManagementService.getTaskConfigs();
+        taskConfigs = configManagementService.getTaskConfigs(RuntimeConfigDefine.CONFIG_ENABLE_DISABLE_LST);
         connectKeyValues = taskConfigs.get(connectorName);
 
         assertNull(connectKeyValue);
@@ -208,14 +208,14 @@ public class ConfigManagementServiceImplTest {
     @Test
     public void testGetTaskConfigs() throws Exception {
 
-        Map<String, List<ConnectKeyValue>> taskConfigs = configManagementService.getTaskConfigs();
+        Map<String, List<ConnectKeyValue>> taskConfigs = configManagementService.getTaskConfigs(RuntimeConfigDefine.CONFIG_ENABLE_DISABLE_LST);
         List<ConnectKeyValue> connectKeyValues = taskConfigs.get(connectorName);
 
         assertNull(connectKeyValues);
 
-        configManagementService.putConnectorConfig(connectorName, this.connectKeyValue);
+        configManagementService.putNewConnectorConfig(connectorName, this.connectKeyValue);
 
-        taskConfigs = configManagementService.getTaskConfigs();
+        taskConfigs = configManagementService.getTaskConfigs(RuntimeConfigDefine.CONFIG_ENABLE_DISABLE_LST);
         connectKeyValues = taskConfigs.get(connectorName);
 
         assertNotNull(connectKeyValues);

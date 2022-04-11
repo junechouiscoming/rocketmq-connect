@@ -17,11 +17,8 @@
 
 package org.apache.rocketmq.connect.runtime.utils;
 
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.List;
-import java.util.Set;
-import java.util.UUID;
+import java.util.*;
+
 import org.apache.rocketmq.acl.common.AclClientRPCHook;
 import org.apache.rocketmq.acl.common.SessionCredentials;
 import org.apache.rocketmq.client.consumer.DefaultMQPullConsumer;
@@ -30,15 +27,16 @@ import org.apache.rocketmq.client.exception.MQClientException;
 import org.apache.rocketmq.client.producer.DefaultMQProducer;
 import org.apache.rocketmq.common.UtilAll;
 import org.apache.rocketmq.common.consumer.ConsumeFromWhere;
+import org.apache.rocketmq.common.protocol.body.ClusterInfo;
+import org.apache.rocketmq.common.protocol.route.BrokerData;
 import org.apache.rocketmq.common.subscription.SubscriptionGroupConfig;
 import org.apache.rocketmq.connect.runtime.config.ConnectConfig;
 import org.apache.rocketmq.connect.runtime.config.RuntimeConfigDefine;
-import org.apache.rocketmq.connect.runtime.service.strategy.AllocateConnAndTaskStrategy;
+import org.apache.rocketmq.connect.runtime.service.strategy.AllocateTaskStrategy;
 import org.apache.rocketmq.remoting.RPCHook;
 import org.apache.rocketmq.remoting.common.RemotingUtil;
 import org.apache.rocketmq.remoting.protocol.LanguageCode;
 import org.apache.rocketmq.tools.admin.DefaultMQAdminExt;
-import org.apache.rocketmq.tools.command.CommandUtil;
 
 public class ConnectUtil {
 
@@ -71,9 +69,9 @@ public class ConnectUtil {
         return new StringBuffer(prefix).append("-").append(UUID.randomUUID().toString()).toString();
     }
 
-    public static AllocateConnAndTaskStrategy initAllocateConnAndTaskStrategy(ConnectConfig connectConfig) {
+    public static AllocateTaskStrategy initAllocateConnAndTaskStrategy(ConnectConfig connectConfig) {
         try {
-            return (AllocateConnAndTaskStrategy) Thread.currentThread().getContextClassLoader().loadClass(connectConfig.getAllocTaskStrategy()).newInstance();
+            return (AllocateTaskStrategy) Thread.currentThread().getContextClassLoader().loadClass(connectConfig.getAllocTaskStrategy()).newInstance();
         } catch (InstantiationException | IllegalAccessException | ClassNotFoundException e) {
             throw new IllegalArgumentException(e);
         }
@@ -155,9 +153,33 @@ public class ConnectUtil {
 
             //根据配置的集群名称，找到集群内所有的master的地址，然后每个master都调用createAndUpdateSubscriptionGroupConfig创建consumer
             //因为一个nameSrv下可能有多个集群
-            Set<String> masterSet = CommandUtil.fetchMasterAddrByClusterName(defaultMQAdminExt, connectConfig.getClusterName());
-            for (String addr : masterSet) {
-                defaultMQAdminExt.createAndUpdateSubscriptionGroupConfig(addr, initConfig);
+            //可是发送和消费时候又不区分集群...所以应该是这里改掉,不考虑集群,给nameSrv集群上的所有master都添加订阅消费组
+            ClusterInfo clusterInfo = defaultMQAdminExt.examineBrokerClusterInfo();
+            HashMap<String, Set<String>> clusterAddrTable = clusterInfo.getClusterAddrTable();
+            Set<String> masterSet = new HashSet<>();
+            if (clusterAddrTable!=null) {
+                HashMap<String, BrokerData> brokerAddrTable = clusterInfo.getBrokerAddrTable();
+
+                for (Map.Entry<String/*clusterName*/, Set<String/*brokerName*/>> entry : clusterAddrTable.entrySet()) {
+                    Set<String> brokerNameSet = entry.getValue();
+                    for (String brokerName : brokerNameSet) {
+                        if (brokerAddrTable!=null) {
+                            BrokerData brokerData = brokerAddrTable.get(brokerName);
+                            if (brokerData!=null) {
+                                HashMap<Long, String> brokerAddrs = brokerData.getBrokerAddrs();
+                                if (brokerAddrs!=null && brokerAddrs.size()>0) {
+                                    String addr = brokerAddrs.get(0L);
+                                    masterSet.add(addr);
+                                }
+                            }
+                        }
+                    }
+
+
+                }
+                for (String addr : masterSet) {
+                    defaultMQAdminExt.createAndUpdateSubscriptionGroupConfig(addr, initConfig);
+                }
             }
         } catch (Exception e) {
             throw new IllegalArgumentException("create subGroup: " + subGroup + " failed", e);

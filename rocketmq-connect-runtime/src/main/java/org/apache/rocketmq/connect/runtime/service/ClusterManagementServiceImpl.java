@@ -71,6 +71,7 @@ public class ClusterManagementServiceImpl implements ClusterManagementService {
      */
     private void prepare(ConnectConfig connectConfig) {
         if (connectConfig.isAutoCreateGroupEnable()) {
+            log.info("create sub group:"+this.defaultMQPullConsumer.getConsumerGroup());
             ConnectUtil.createSubGroup(connectConfig, this.defaultMQPullConsumer.getConsumerGroup());
         }
     }

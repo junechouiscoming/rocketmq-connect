@@ -17,15 +17,17 @@
 
 package org.apache.rocketmq.connect.runtime.service;
 
+import com.alibaba.fastjson.JSON;
+import com.alibaba.fastjson.TypeReference;
+import com.alibaba.fastjson.serializer.SerializerFeature;
+import com.google.common.primitives.Longs;
 import io.netty.util.internal.ConcurrentSet;
 import java.nio.ByteBuffer;
-import java.util.HashSet;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
+import java.nio.charset.StandardCharsets;
+import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Collectors;
 import org.apache.rocketmq.connect.runtime.config.ConnectConfig;
-import org.apache.rocketmq.connect.runtime.converter.ByteBufferConverter;
 import org.apache.rocketmq.connect.runtime.converter.ByteMapConverter;
 import org.apache.rocketmq.connect.runtime.converter.JsonConverter;
 import org.apache.rocketmq.connect.runtime.store.FileBaseKeyValueStore;
@@ -64,9 +66,35 @@ public class OffsetManagementServiceImpl implements PositionManagementService {
 
     public OffsetManagementServiceImpl(ConnectConfig connectConfig) {
 
-        this.offsetStore = new FileBaseKeyValueStore<>(FilePathConfigUtil.getOffsetPath(connectConfig.getStorePathRootDir()),
-            new ByteBufferConverter(),
-            new ByteBufferConverter());
+        this.offsetStore = new FileBaseKeyValueStore<ByteBuffer,ByteBuffer>(
+                FilePathConfigUtil.getOffsetPath(connectConfig.getStorePathRootDir()),
+                new TypeReference<Map<ByteBuffer,ByteBuffer>>() {}){
+            @Override
+            protected Map<ByteBuffer,ByteBuffer> decode(String jsonString) {
+                Map<String, String> map = JSON.parseObject(jsonString, new TypeReference<ConcurrentHashMap<String, String>>() {});
+                Map<ByteBuffer, ByteBuffer> returnMap = new ConcurrentHashMap<>();
+                map.entrySet().stream().forEach(e->{
+                    if (e.getKey()!=null && e.getValue()!=null) {
+                        returnMap.put(ByteBuffer.wrap(e.getKey().getBytes(StandardCharsets.UTF_8)),ByteBuffer.wrap(e.getValue().getBytes(StandardCharsets.UTF_8)));
+                    }
+                });
+                return returnMap;
+            }
+
+            @Override
+            protected String encode(Map<ByteBuffer,ByteBuffer> data) {
+                Map<String, String> offsetMap = new ConcurrentHashMap<>();
+                data.entrySet().stream().forEach(e->{
+                    if (e.getValue().hasArray() && e.getValue().array() != null) {
+                        String s = new String(e.getValue().array());
+                        if(s!=null && s.length()>0){
+                            offsetMap.put(new String(e.getKey().array()),new String(e.getValue().array()));
+                        }
+                    }
+                });
+                return JSON.toJSONString(offsetMap, SerializerFeature.PrettyFormat);
+            }
+        };
         this.dataSynchronizer = new BrokerBasedLog(connectConfig,
             connectConfig.getOffsetStoreTopic(),
             ConnectUtil.createGroupName(offsetManagePrefix, connectConfig.getWorkerId()),
@@ -95,7 +123,6 @@ public class OffsetManagementServiceImpl implements PositionManagementService {
 
     @Override
     public void persist() {
-
         offsetStore.persist();
     }
 
@@ -207,7 +234,7 @@ public class OffsetManagementServiceImpl implements PositionManagementService {
      * @param result
      * @return
      */
-    private boolean mergeOffsetInfo(Map<ByteBuffer, ByteBuffer> result) {
+    private synchronized boolean mergeOffsetInfo(Map<ByteBuffer, ByteBuffer> result) {
 
         boolean changed = false;
         if (null == result || 0 == result.size()) {

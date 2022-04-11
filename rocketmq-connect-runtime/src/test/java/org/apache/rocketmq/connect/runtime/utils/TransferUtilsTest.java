@@ -22,7 +22,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
-import org.apache.rocketmq.connect.runtime.common.ConnAndTaskConfigs;
+import org.apache.rocketmq.connect.runtime.common.ConnectorAndTaskConfigs;
 import org.apache.rocketmq.connect.runtime.common.ConnectKeyValue;
 import org.apache.rocketmq.connect.runtime.config.RuntimeConfigDefine;
 import org.junit.Test;
@@ -91,22 +91,22 @@ public class TransferUtilsTest {
                 put(connectName, connectKeyValues);
             }
         };
-        ConnAndTaskConfigs connAndTaskConfigs = new ConnAndTaskConfigs();
-        connAndTaskConfigs.setConnectorConfigs(connectorConfigs);
-        connAndTaskConfigs.setTaskConfigs(taskConfigs);
+        ConnectorAndTaskConfigs connectorAndTaskConfigs = new ConnectorAndTaskConfigs();
+        connectorAndTaskConfigs.setConnectorConfigs(connectorConfigs);
+        connectorAndTaskConfigs.setTaskConfigs(taskConfigs);
         Map<String, String> connectorMap = new HashMap<>();
         Map<String, String> taskMap = new HashMap<>();
-        for (String key : connAndTaskConfigs.getConnectorConfigs().keySet()) {
-            connectorMap.put(key, TransferUtils.keyValueToString(connAndTaskConfigs.getConnectorConfigs().get(key)));
+        for (String key : connectorAndTaskConfigs.getConnectorConfigs().keySet()) {
+            connectorMap.put(key, TransferUtils.keyValueToString(connectorAndTaskConfigs.getConnectorConfigs().get(key)));
         }
-        for (String key : connAndTaskConfigs.getTaskConfigs().keySet()) {
-            taskMap.put(key, TransferUtils.keyValueListToString(connAndTaskConfigs.getTaskConfigs().get(key)));
+        for (String key : connectorAndTaskConfigs.getTaskConfigs().keySet()) {
+            taskMap.put(key, TransferUtils.keyValueListToString(connectorAndTaskConfigs.getTaskConfigs().get(key)));
         }
         String s = TransferUtils.toJsonString(connectorMap, taskMap);
-        ConnAndTaskConfigs connAndTaskConfigs1 = TransferUtils.toConnAndTaskConfigs(s);
-        Map<String, ConnectKeyValue> connectorConfigs1 = connAndTaskConfigs1.getConnectorConfigs();
+        ConnectorAndTaskConfigs connectorAndTaskConfigs1 = TransferUtils.toConnAndTaskConfigs(s);
+        Map<String, ConnectKeyValue> connectorConfigs1 = connectorAndTaskConfigs1.getConnectorConfigs();
 
-        assertNotNull(connAndTaskConfigs1);
+        assertNotNull(connectorAndTaskConfigs1);
 
         ConnectKeyValue connectKeyValue1 = connectorConfigs1.get(connectName);
 
@@ -114,7 +114,7 @@ public class TransferUtilsTest {
         assertEquals("io.openmessaging.connect.runtime.service.TestConnector", connectKeyValue1.getString(RuntimeConfigDefine.CONNECTOR_CLASS));
         assertEquals("source-record-converter", connectKeyValue1.getString(RuntimeConfigDefine.SOURCE_RECORD_CONVERTER));
 
-        Map<String, List<ConnectKeyValue>> taskConfigs1 = connAndTaskConfigs1.getTaskConfigs();
+        Map<String, List<ConnectKeyValue>> taskConfigs1 = connectorAndTaskConfigs1.getTaskConfigs();
         List<ConnectKeyValue> connectKeyValues1 = taskConfigs1.get(connectName);
 
         assertNotNull(connectKeyValues1);

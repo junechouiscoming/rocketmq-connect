@@ -21,7 +21,7 @@ import io.openmessaging.connector.api.data.Converter;
 import java.io.UnsupportedEncodingException;
 import java.util.HashMap;
 import java.util.Map;
-import org.apache.rocketmq.connect.runtime.common.ConnAndTaskConfigs;
+import org.apache.rocketmq.connect.runtime.common.ConnectorAndTaskConfigs;
 import org.apache.rocketmq.connect.runtime.common.LoggerName;
 import org.apache.rocketmq.connect.runtime.utils.TransferUtils;
 import org.slf4j.Logger;
@@ -30,14 +30,14 @@ import org.slf4j.LoggerFactory;
 /**
  * Converter data between ConnAndTaskConfigs and byte[].
  */
-public class ConnAndTaskConfigConverter implements Converter<ConnAndTaskConfigs> {
+public class ConnAndTaskConfigConverter implements Converter<ConnectorAndTaskConfigs> {
 
     private static final Logger log = LoggerFactory.getLogger(LoggerName.ROCKETMQ_RUNTIME);
 
     @Override
-    public byte[] objectToByte(ConnAndTaskConfigs object) {
+    public byte[] objectToByte(ConnectorAndTaskConfigs object) {
         try {
-            ConnAndTaskConfigs configs = object;
+            ConnectorAndTaskConfigs configs = object;
             Map<String, String> connectorMap = new HashMap<>();
             Map<String, String> taskMap = new HashMap<>();
             for (String key : configs.getConnectorConfigs().keySet()) {
@@ -54,11 +54,11 @@ public class ConnAndTaskConfigConverter implements Converter<ConnAndTaskConfigs>
     }
 
     @Override
-    public ConnAndTaskConfigs byteToObject(byte[] bytes) {
+    public ConnectorAndTaskConfigs byteToObject(byte[] bytes) {
 
         try {
             String jsonString = new String(bytes, "UTF-8");
-            ConnAndTaskConfigs configs = TransferUtils.toConnAndTaskConfigs(jsonString);
+            ConnectorAndTaskConfigs configs = TransferUtils.toConnAndTaskConfigs(jsonString);
             return configs;
         } catch (UnsupportedEncodingException e) {
             log.error("ConnAndTaskConfigConverter#byteToObject failed", e);

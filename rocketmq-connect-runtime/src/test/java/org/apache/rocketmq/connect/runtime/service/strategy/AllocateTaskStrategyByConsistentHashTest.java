@@ -22,7 +22,9 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import org.apache.rocketmq.connect.runtime.common.ConnAndTaskConfigs;
+
+import org.apache.rocketmq.connect.runtime.common.AllocateResultConfigs;
+import org.apache.rocketmq.connect.runtime.common.ConnectorAndTaskConfigs;
 import org.apache.rocketmq.connect.runtime.common.ConnectKeyValue;
 import org.junit.Test;
 
@@ -30,11 +32,11 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 
-public class AllocateConnAndTaskStrategyByConsistentHashTest {
+public class AllocateTaskStrategyByConsistentHashTest {
 
     @Test
     public void testAllocate() {
-        AllocateConnAndTaskStrategyByConsistentHash strategy = new AllocateConnAndTaskStrategyByConsistentHash();
+        AllocateTaskStrategyByConsistentHash strategy = new AllocateTaskStrategyByConsistentHash();
 
         List<String> allWorker = new ArrayList<String>() {
             {
@@ -92,13 +94,8 @@ public class AllocateConnAndTaskStrategyByConsistentHashTest {
         });
 
         for (String worker : allWorker) {
-            ConnAndTaskConfigs allocate = strategy.allocate(allWorker, worker, connectorConfigs, taskConfigs);
+            AllocateResultConfigs allocate = strategy.allocate(allWorker, worker, taskConfigs);
             assertNotNull(allocate);
-
-            allocate.getConnectorConfigs().keySet().forEach(key -> {
-                assertFalse(connectorChecks.contains(key));
-                connectorChecks.add(key);
-            });
 
             allocate.getTaskConfigs().forEach((connectorName, allocatedTasks) -> {
                 List<ConnectKeyValue> checkKVs = taskChecks.computeIfAbsent(connectorName, k -> new ArrayList<>());

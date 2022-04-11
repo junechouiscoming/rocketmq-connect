@@ -22,6 +22,9 @@ import java.io.FileInputStream;
 import java.io.InputStream;
 import java.util.Properties;
 import java.util.concurrent.atomic.AtomicInteger;
+
+import com.alibaba.fastjson.JSON;
+import com.alibaba.fastjson.parser.ParserConfig;
 import org.apache.commons.cli.CommandLine;
 import org.apache.commons.cli.Option;
 import org.apache.commons.cli.Options;
@@ -51,12 +54,10 @@ public class ConnectStartup {
     }
 
     private static void start(ConnectController controller) {
-
         try {
             controller.start();
             String tip = "The worker [" + controller.getClusterManagementService().getCurrentWorker() + "] boot success.";
             log.info(tip);
-            System.out.printf("%s%n", tip);
         } catch (Throwable e) {
             e.printStackTrace();
             System.exit(-1);
@@ -72,7 +73,6 @@ public class ConnectStartup {
     private static ConnectController createConnectController(String[] args) {
 
         try {
-
             // Build the command line options.
             Options options = ServerUtil.buildCommandlineOptions(new Options());
             commandLine = ServerUtil.parseCmdLine("connect", args, buildCommandlineOptions(options),
@@ -99,7 +99,6 @@ public class ConnectStartup {
 
             // Create controller and initialize.
             ConnectController controller = new ConnectController(connectConfig);
-            controller.initialize();
             // Invoked when shutdown.
             Runtime.getRuntime().addShutdownHook(new Thread(new Runnable() {
                 private volatile boolean hasShutdown = false;

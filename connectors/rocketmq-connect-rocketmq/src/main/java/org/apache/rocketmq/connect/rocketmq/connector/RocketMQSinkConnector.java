@@ -15,42 +15,38 @@
  * limitations under the License.
  */
 
-package org.apache.rocketmq.connect.kafka.connector;
+package org.apache.rocketmq.connect.rocketmq.connector;
 
 import io.openmessaging.KeyValue;
 import io.openmessaging.connector.api.Task;
-import io.openmessaging.connector.api.source.SourceConnector;
+import io.openmessaging.connector.api.sink.SinkConnector;
 import io.openmessaging.internal.DefaultKeyValue;
-import org.apache.rocketmq.connect.kafka.config.ConfigDefine;
+import org.apache.rocketmq.connect.rocketmq.config.ConfigDefine;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
 import java.util.List;
-import java.util.concurrent.CopyOnWriteArrayList;
 
 /**
- *  连接器实例属于逻辑概念，其负责维护特定数据系统的相关配置，比如链接地址、需要同步哪些数据等信息；
- *  在connector 实例被启动后，connector可以根据配置信息，对解析任务进行拆分，分配出task。这么做的目的是为了提高并行度，提升处理效率
+ * 配置一个DirectTask,从rocketMQ消费send到kafka
  */
-public class KafkaSourceConnector extends SourceConnector {
-    private static final Logger log = LoggerFactory.getLogger(KafkaSourceConnector.class);
+public class RocketMQSinkConnector extends SinkConnector {
+    private static final Logger log = LoggerFactory.getLogger(RocketMQSinkConnector.class);
 
     private KeyValue connectConfig;
 
-    public KafkaSourceConnector() {
+    public RocketMQSinkConnector() {
         super();
     }
 
     @Override
     public String verifyAndSetConfig(KeyValue config) {
-
-        log.info("KafkaSourceConnector verifyAndSetConfig enter");
         for (String key : config.keySet()) {
             log.info("connector verifyAndSetConfig: key: {}, value: {}", key, config.getString(key));
         }
 
-        //mz 校验一下必要的key有没有缺失
+        //TODO 校验一下必要的key有没有缺失
         for (String requestKey : ConfigDefine.REQUEST_CONFIG) {
             if (!config.containsKey(requestKey)) {
                 return "Request Config key: " + requestKey;
@@ -62,12 +58,11 @@ public class KafkaSourceConnector extends SourceConnector {
 
     @Override
     public void start() {
-
     }
 
     @Override
     public void stop() {
-
+        //connector启停没啥意义,关键是Task
     }
 
     @Override
@@ -82,7 +77,7 @@ public class KafkaSourceConnector extends SourceConnector {
 
     @Override
     public Class<? extends Task> taskClass() {
-        return KafkaSourceTask.class;
+        return RocketMQSinkTask.class;
     }
 
     @Override
@@ -91,18 +86,22 @@ public class KafkaSourceConnector extends SourceConnector {
             return new ArrayList<KeyValue>();
         }
 
-        log.info("Source Connector taskConfigs enter");
+        log.info("rocketmq Connector taskConfigs enter");
         List<KeyValue> configs = new ArrayList<>();
         int task_num = connectConfig.getInt(ConfigDefine.TASK_NUM);
-        log.info("Source Connector taskConfigs: task_num:" + task_num);
+        log.info("rocketmq Connector taskConfigs: task_num:" + task_num);
         for (int i = 0; i < task_num; ++i) {
             KeyValue config = new DefaultKeyValue();
+            //kafka
             config.put(ConfigDefine.BOOTSTRAP_SERVER, connectConfig.getString(ConfigDefine.BOOTSTRAP_SERVER));
-            config.put(ConfigDefine.TOPICS, connectConfig.getString(ConfigDefine.TOPICS));
             config.put(ConfigDefine.GROUP_ID, connectConfig.getString(ConfigDefine.GROUP_ID));
+            //common
+            config.put(ConfigDefine.CONNECTOR_CLASS, "org.apache.rocketmq.connect.rocketmq.connector.RocketMQSinkConnector");
 
-            config.put(ConfigDefine.CONNECTOR_CLASS, "org.apache.rocketmq.connect.kafka.connector.KafkaSourceConnector");
-            config.put(ConfigDefine.SOURCE_RECORD_CONVERTER, connectConfig.getString(ConfigDefine.SOURCE_RECORD_CONVERTER));
+            //从哪个topic消费数据
+            config.put(ConfigDefine.QUEUENAMES_CONFIG, connectConfig.getString(ConfigDefine.QUEUENAMES_CONFIG));
+            //config.put(ConfigDefine.OFFSET_COMMIT_INTERVAL_MS_CONFIG, connectConfig.getString(ConfigDefine.OFFSET_COMMIT_INTERVAL_MS_CONFIG));
+
             configs.add(config);
         }
         return configs;

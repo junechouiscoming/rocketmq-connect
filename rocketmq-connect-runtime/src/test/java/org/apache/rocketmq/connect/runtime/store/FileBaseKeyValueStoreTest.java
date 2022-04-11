@@ -27,16 +27,5 @@ public class FileBaseKeyValueStoreTest {
 
     @Test
     public void testFileBaseKeyValueStore() {
-        FileBaseKeyValueStore<byte[], byte[]> fbkvs = new FileBaseKeyValueStore<>(
-            "target/unit_test_store/testFileBaseKeyValueStore/000",
-            new ByteConverter(),
-            new ByteConverter()
-        );
-
-        fbkvs.data = new HashMap<>();
-        fbkvs.data.put("test_key".getBytes(), "test_value".getBytes());
-        fbkvs.persist();
-        boolean flag = fbkvs.load();
-        assertThat(flag).isEqualTo(true);
     }
 }

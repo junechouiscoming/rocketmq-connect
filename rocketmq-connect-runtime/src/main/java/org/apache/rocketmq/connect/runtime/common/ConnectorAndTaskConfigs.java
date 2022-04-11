@@ -24,7 +24,7 @@ import java.util.Map;
 /**
  * Encapsulation of connector configs and  task configs.
  */
-public class ConnAndTaskConfigs {
+public class ConnectorAndTaskConfigs {
 
     private Map<String, ConnectKeyValue> connectorConfigs = new HashMap<>();
     private Map<String, List<ConnectKeyValue>> taskConfigs = new HashMap<>();
