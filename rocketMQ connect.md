@@ -38,6 +38,8 @@ autoCreateGroupEnable=true #自动调用admin工具创建consumerGroup.如手工
 #sink和source插件的目录,注意每个sink和source都是独立的类加载器，所以sink和souce打包时如果有依赖需要用shade打成fat包
 pluginPaths=C:/Users/11722/.m2/repository/org/apache/rocketmq/rocketmq-connect-rocketmq/0.0.1-SNAPSHOT,C:/Users/11722/.m2/repository/org/apache/rocketmq/rocketmq-connect-kafka/0.0.1-SNAPSHOT
 ```
+启动java命令需携带JVM参数 -c E:\idea_wp\rocketmq-connect\rocketmq-connect-runtime\src\main\resources\connect.conf
+
 # rocketmq-connect-kafka
 
 **发送kafka消息到rocketMQ集群**
