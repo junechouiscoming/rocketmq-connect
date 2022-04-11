@@ -26,8 +26,6 @@ public class ConfigDefine {
     public static String GROUP_ID = "kafka.group.id";
     public static String BOOTSTRAP_SERVER = "kafka.bootstrap.server";
     public static String CONNECTOR_CLASS = "connector-class";
-    public static String SOURCE_RECORD_CONVERTER = "source-record-converter";
-    public static String ROCKETMQ_TOPIC = "rocketmq.topic";
 
     private String bootstrapServers;
     private String topics;

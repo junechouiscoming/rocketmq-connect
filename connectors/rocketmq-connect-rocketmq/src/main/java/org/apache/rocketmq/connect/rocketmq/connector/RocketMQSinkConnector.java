@@ -94,12 +94,11 @@ public class RocketMQSinkConnector extends SinkConnector {
             KeyValue config = new DefaultKeyValue();
             //kafka
             config.put(ConfigDefine.BOOTSTRAP_SERVER, connectConfig.getString(ConfigDefine.BOOTSTRAP_SERVER));
-            config.put(ConfigDefine.GROUP_ID, connectConfig.getString(ConfigDefine.GROUP_ID));
             //common
             config.put(ConfigDefine.CONNECTOR_CLASS, "org.apache.rocketmq.connect.rocketmq.connector.RocketMQSinkConnector");
 
             //从哪个topic消费数据
-            config.put(ConfigDefine.QUEUENAMES_CONFIG, connectConfig.getString(ConfigDefine.QUEUENAMES_CONFIG));
+            config.put(ConfigDefine.TOPIC_NAMES, connectConfig.getString(ConfigDefine.TOPIC_NAMES));
             //config.put(ConfigDefine.OFFSET_COMMIT_INTERVAL_MS_CONFIG, connectConfig.getString(ConfigDefine.OFFSET_COMMIT_INTERVAL_MS_CONFIG));
 
             configs.add(config);

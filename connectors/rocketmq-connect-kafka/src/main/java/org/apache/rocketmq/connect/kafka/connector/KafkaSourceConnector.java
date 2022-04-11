@@ -99,10 +99,8 @@ public class KafkaSourceConnector extends SourceConnector {
             KeyValue config = new DefaultKeyValue();
             config.put(ConfigDefine.BOOTSTRAP_SERVER, connectConfig.getString(ConfigDefine.BOOTSTRAP_SERVER));
             config.put(ConfigDefine.TOPICS, connectConfig.getString(ConfigDefine.TOPICS));
-            config.put(ConfigDefine.GROUP_ID, connectConfig.getString(ConfigDefine.GROUP_ID));
-
+            config.put(ConfigDefine.GROUP_ID,"connector-consumer-group");
             config.put(ConfigDefine.CONNECTOR_CLASS, "org.apache.rocketmq.connect.kafka.connector.KafkaSourceConnector");
-            config.put(ConfigDefine.SOURCE_RECORD_CONVERTER, connectConfig.getString(ConfigDefine.SOURCE_RECORD_CONVERTER));
             configs.add(config);
         }
         return configs;

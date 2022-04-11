@@ -59,7 +59,7 @@ public class WorkerSinkTask implements WorkerTask {
     /**
      * The configuration key that provides the list of topicNames that are inputs for this SinkTask.
      */
-    public static final String QUEUENAMES_CONFIG = "topicNames";
+    public static final String QUEUENAMES_CONFIG = "rocketmq.topics";
 
     /**
      * Connector name of current task.

@@ -25,14 +25,14 @@ public class ConfigDefine {
     public static String BOOTSTRAP_SERVER = "kafka.bootstrap.server";
 
     //消息从rocketMQ的哪个topic拉出来,逗号分割
-    public static final String QUEUENAMES_CONFIG = "topicNames";
+    public static final String TOPIC_NAMES = "rocketmq.topics";
 
     public static String CONNECTOR_CLASS = "connector-class";
     public static String TASK_NUM = "tasks.num";
 
     public static final Set<String> REQUEST_CONFIG = new HashSet<String>(){
         {
-            add(QUEUENAMES_CONFIG);
+            add(TOPIC_NAMES);
             add(GROUP_ID);
             add(BOOTSTRAP_SERVER);
         }
