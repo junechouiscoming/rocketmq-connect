@@ -27,7 +27,12 @@ import java.nio.charset.StandardCharsets;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Collectors;
+
+import org.apache.commons.lang3.StringUtils;
+import org.apache.commons.logging.Log;
+import org.apache.rocketmq.connect.runtime.common.LoggerName;
 import org.apache.rocketmq.connect.runtime.config.ConnectConfig;
+import org.apache.rocketmq.connect.runtime.config.RuntimeConfigDefine;
 import org.apache.rocketmq.connect.runtime.converter.ByteMapConverter;
 import org.apache.rocketmq.connect.runtime.converter.JsonConverter;
 import org.apache.rocketmq.connect.runtime.store.FileBaseKeyValueStore;
@@ -37,8 +42,11 @@ import org.apache.rocketmq.connect.runtime.utils.FilePathConfigUtil;
 import org.apache.rocketmq.connect.runtime.utils.datasync.BrokerBasedLog;
 import org.apache.rocketmq.connect.runtime.utils.datasync.DataSynchronizer;
 import org.apache.rocketmq.connect.runtime.utils.datasync.DataSynchronizerCallback;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 public class OffsetManagementServiceImpl implements PositionManagementService {
+    private static Logger logger = LoggerFactory.getLogger(LoggerName.ROCKETMQ_RUNTIME);
 
     /**
      * Current offset info in store.
@@ -246,14 +254,20 @@ public class OffsetManagementServiceImpl implements PositionManagementService {
             for (Map.Entry<ByteBuffer, ByteBuffer> existedEntry : offsetStore.getKVMap().entrySet()) {
                 if (newEntry.getKey().equals(existedEntry.getKey())) {
                     find = true;
-                    if (!newEntry.getValue().equals(existedEntry.getValue())) {
+                    final String newOffsetStr = new String(newEntry.getValue().array().length==0?"0".getBytes(StandardCharsets.UTF_8):newEntry.getValue().array());
+                    final String existedOffsetStr = new String(existedEntry.getValue().array().length==0?"0".getBytes(StandardCharsets.UTF_8):existedEntry.getValue().array());
+
+                    if(Long.parseLong(newOffsetStr) > Long.parseLong(existedOffsetStr)){
                         changed = true;
                         existedEntry.setValue(newEntry.getValue());
+                    }else{
+                        logger.info("receive a lower offset and will ignore it");
                     }
                     break;
                 }
             }
             if (!find) {
+                changed = true;
                 offsetStore.put(newEntry.getKey(), newEntry.getValue());
             }
         }
