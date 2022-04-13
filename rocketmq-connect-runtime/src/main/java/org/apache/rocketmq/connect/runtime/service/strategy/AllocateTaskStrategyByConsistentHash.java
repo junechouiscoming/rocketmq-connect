@@ -21,6 +21,8 @@ import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
+
+import com.alibaba.fastjson.JSON;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.rocketmq.common.consistenthash.ConsistentHashRouter;
 import org.apache.rocketmq.common.consistenthash.HashFunction;
@@ -45,7 +47,7 @@ public class AllocateTaskStrategyByConsistentHash implements AllocateTaskStrateg
         String funcName = System.getProperty(RuntimeConfigDefine.HASH_FUNC);
         if (StringUtils.isNoneEmpty(funcName)) {
             try {
-                hashFunc = (HashFunction) Class.forName(funcName).newInstance();
+                //hashFunc = (HashFunction) Class.forName(funcName).newInstance();
             } catch (Exception e) {
                 log.error("custom hashFunc: {} failed", funcName, e);
                 throw new IllegalArgumentException(String.format("init funcName: %s failed.", funcName));
@@ -54,26 +56,29 @@ public class AllocateTaskStrategyByConsistentHash implements AllocateTaskStrateg
     }
 
     @Override public AllocateResultConfigs allocate(List<String> allWorker, String curWorker, Map<String, List<ConnectKeyValue>> taskConfigs) {
- /*       AllocateResultConfigs allocateResult = new AllocateResultConfigs();
+        AllocateResultConfigs allocateResult = new AllocateResultConfigs();
         if (null == allWorker || 0 == allWorker.size()) {
             return allocateResult;
         }
 
         Collection<ClientNode> cidNodes = allWorker.stream().map(ClientNode::new).collect(Collectors.toList());
-        ConsistentHashRouter router = getRouter(cidNodes);
+        ConsistentHashRouter<ClientNode> router = getRouter(cidNodes);
 
-        connectorConfigs.entrySet().stream().filter(task -> curWorker.equals(router.routeNode(task.getKey()).getKey()))
-            .forEach(task -> allocateResult.getConnectorConfigs().put(task.getKey(), task.getValue()));
-
-        for (Map.Entry<String, List<ConnectKeyValue>> connector : taskConfigs.entrySet()) {
-            connector.getValue().stream().filter(kv -> curWorker.equals(router.routeNode(kv.toString()).getKey()))
-                .forEach(allocateResult.getTaskConfigs().computeIfAbsent(connector.getKey(), k -> new ArrayList<>())::add);
+        for (Map.Entry<String, List<ConnectKeyValue>> entry : taskConfigs.entrySet()) {
+            String connectorName = entry.getKey();
+            for (ConnectKeyValue task : entry.getValue()) {
+                final Node node = router.routeNode(JSON.toJSONString(task));
+                if (node.getKey().equals(curWorker)) {
+                    //分给自己的
+                    allocateResult.getTaskConfigs().putIfAbsent(connectorName, new ArrayList<>());
+                    allocateResult.getTaskConfigs().get(connectorName).add(task);
+                }
+            }
         }
-        log.debug("allocate result: " + allocateResult);*/
-        return new AllocateResultConfigs();
+        return allocateResult;
     }
 
-    private ConsistentHashRouter getRouter(Collection<ClientNode> cidNodes) {
+    private ConsistentHashRouter<ClientNode> getRouter(Collection<ClientNode> cidNodes) {
         int virtualNodeCnt = virtualNodes;
         if (virtualNodeCnt == 0) {
             virtualNodeCnt = cidNodes.size();

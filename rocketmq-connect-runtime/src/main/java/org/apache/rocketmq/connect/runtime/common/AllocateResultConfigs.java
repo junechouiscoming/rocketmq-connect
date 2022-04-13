@@ -6,9 +6,10 @@ import com.alibaba.fastjson.serializer.SerializerFeature;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 public class AllocateResultConfigs {
-    private Map<String, List<ConnectKeyValue>> taskConfigs = new HashMap<>();
+    private Map<String, List<ConnectKeyValue>> taskConfigs = new ConcurrentHashMap<>();
 
     public Map<String, List<ConnectKeyValue>> getTaskConfigs() {
         return taskConfigs;
