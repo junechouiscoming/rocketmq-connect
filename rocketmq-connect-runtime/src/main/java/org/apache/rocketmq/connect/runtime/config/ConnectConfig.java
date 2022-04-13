@@ -17,6 +17,7 @@
 
 package org.apache.rocketmq.connect.runtime.config;
 
+import org.apache.rocketmq.connect.runtime.service.strategy.AllocateTaskStrategyByConsistentHash;
 import org.apache.rocketmq.connect.runtime.service.strategy.DefaultAllocateTaskStrategy;
 
 import java.io.File;
@@ -107,7 +108,7 @@ public class ConnectConfig {
 
     private String connectClusterId = "connector-cluster-group";
 
-    private String allocTaskStrategy = DefaultAllocateTaskStrategy.class.getName();
+    private String allocTaskStrategy = AllocateTaskStrategyByConsistentHash.class.getName();
 
     private boolean aclEnable = false;
 
