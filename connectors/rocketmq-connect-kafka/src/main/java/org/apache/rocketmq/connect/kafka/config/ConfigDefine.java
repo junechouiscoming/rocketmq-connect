@@ -58,7 +58,7 @@ public class ConfigDefine {
     public static final Set<String> REQUEST_CONFIG = new HashSet<String>(){
         {
             add(TOPICS);
-            add(GROUP_ID);
+            //add(GROUP_ID);
             add(BOOTSTRAP_SERVER);
         }
     };
