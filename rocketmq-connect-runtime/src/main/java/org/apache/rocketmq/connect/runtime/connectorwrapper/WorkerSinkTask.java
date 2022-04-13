@@ -160,7 +160,7 @@ public class WorkerSinkTask implements WorkerTask {
      */
     @Override
     public void run() {
-
+        consumerPullRocketMQ.setConsumerPullTimeoutMillis(2*1000);
         Plugin.compareAndSwapLoaders(this.classLoader);
 
         state.compareAndSet(WorkerTaskState.NEW, WorkerTaskState.PENDING);
@@ -394,9 +394,8 @@ public class WorkerSinkTask implements WorkerTask {
      */
     private void receiveMessages(List<MessageExt> messages) {
         for (MessageExt message : messages) {
-            long queueOffset = message.getQueueOffset();
             if (log.isDebugEnabled()) {
-                log.debug("Sink Received one message:", new String(message.getBody()==null?new byte[0]:message.getBody()));
+                log.debug("Sink Received one message:%s",new String(message.getBody()==null?new byte[0]:message.getBody()));
             }
             SinkDataEntry sinkDataEntry = convertToSinkDataEntry(message);
             sinkDataEntries.add(sinkDataEntry);
