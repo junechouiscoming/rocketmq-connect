@@ -23,6 +23,9 @@ import java.util.Base64;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+
 import org.apache.rocketmq.client.consumer.DefaultMQPushConsumer;
 import org.apache.rocketmq.client.consumer.listener.ConsumeConcurrentlyContext;
 import org.apache.rocketmq.client.consumer.listener.ConsumeConcurrentlyStatus;
@@ -82,6 +85,8 @@ public class BrokerBasedLog<K, V> implements DataSynchronizer<K, V> {
      * Used to convert value to byte[].
      */
     private Converter valueConverter;
+
+    private ExecutorService executors = Executors.newSingleThreadExecutor();
 
     public BrokerBasedLog(ConnectConfig connectConfig,
         String topicName,
@@ -149,7 +154,17 @@ public class BrokerBasedLog<K, V> implements DataSynchronizer<K, V> {
                     if (null != throwable) {
                         log.error("Send SYS async message Failed, error: {} and will retry until success", throwable);
                     }
-                    BrokerBasedLog.this.send(key,value);
+                    executors.submit(new Runnable() {
+                        @Override
+                        public void run() {
+                            try {
+                                Thread.sleep(1000);
+                                BrokerBasedLog.this.send(key,value);
+                            } catch (InterruptedException e) {
+                                e.printStackTrace();
+                            }
+                        }
+                    });
                 }
             });
         } catch (Exception e) {
