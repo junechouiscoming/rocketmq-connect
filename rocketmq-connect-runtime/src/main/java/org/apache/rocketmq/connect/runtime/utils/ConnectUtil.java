@@ -89,6 +89,7 @@ public class ConnectUtil {
         producer.setSendMsgTimeout(connectConfig.getOperationTimeout());
         producer.setMaxMessageSize(RuntimeConfigDefine.MAX_MESSAGE_SIZE);
         producer.setLanguage(LanguageCode.JAVA);
+        producer.setRetryAnotherBrokerWhenNotStoreOK(true);
         return producer;
     }
 
