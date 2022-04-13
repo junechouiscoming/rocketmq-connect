@@ -91,7 +91,7 @@ public class RebalanceImpl {
             if (!clusterManagementService.hasClusterStoreTopic()) {
                 throw new RuntimeException(String.format("clusterStoreTopic may not exist in rocketMQ,please create it first,the topic default name is '%s'", "connector-cluster-topic"));
             }else{
-                log.debug("Current Alive workers : null");
+                log.info("Current Alive workers is null , this message may show several times when connect runtime start up , after a while this message should not be shown");
                 return;
             }
         }
