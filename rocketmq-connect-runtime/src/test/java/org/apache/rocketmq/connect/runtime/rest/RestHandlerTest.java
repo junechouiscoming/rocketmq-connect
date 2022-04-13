@@ -131,7 +131,7 @@ public class RestHandlerTest {
         when(connectController.getConnectConfig()).thenReturn(connectConfig);
         when(connectConfig.getHttpPort()).thenReturn(8081);
         when(connectController.getConfigManagementService()).thenReturn(configManagementService);
-        when(configManagementService.putNewConnectorConfig(anyString(), any(ConnectKeyValue.class))).thenReturn("");
+        //when(configManagementService.putNewConnectorConfig(anyString(), any(ConnectKeyValue.class))).thenReturn("");
 
         String connectName = "testConnector";
         ConnectKeyValue connectKeyValue = new ConnectKeyValue();

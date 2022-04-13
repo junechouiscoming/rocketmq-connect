@@ -22,17 +22,14 @@ import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
 
-import com.alibaba.fastjson.JSON;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.rocketmq.common.consistenthash.ConsistentHashRouter;
 import org.apache.rocketmq.common.consistenthash.HashFunction;
 import org.apache.rocketmq.common.consistenthash.Node;
 import org.apache.rocketmq.connect.runtime.common.AllocateResultConfigs;
-import org.apache.rocketmq.connect.runtime.common.ConnectorAndTaskConfigs;
 import org.apache.rocketmq.connect.runtime.common.ConnectKeyValue;
 import org.apache.rocketmq.connect.runtime.common.LoggerName;
 import org.apache.rocketmq.connect.runtime.config.RuntimeConfigDefine;
-import org.checkerframework.checker.units.qual.A;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -41,9 +38,10 @@ public class AllocateTaskStrategyByConsistentHash implements AllocateTaskStrateg
 
     private int virtualNodes;
     private HashFunction hashFunc;
+    int totalNodes = 300;
 
     public AllocateTaskStrategyByConsistentHash() {
-        virtualNodes = Integer.parseInt(System.getProperty(RuntimeConfigDefine.VIRTUAL_NODE, "0"));
+        totalNodes = Integer.parseInt(System.getProperty(RuntimeConfigDefine.LEATSET_NODE, "300"));
         String funcName = System.getProperty(RuntimeConfigDefine.HASH_FUNC);
         if (StringUtils.isNoneEmpty(funcName)) {
             try {
@@ -63,11 +61,11 @@ public class AllocateTaskStrategyByConsistentHash implements AllocateTaskStrateg
 
         Collection<ClientNode> cidNodes = allWorker.stream().map(ClientNode::new).collect(Collectors.toList());
         ConsistentHashRouter<ClientNode> router = getRouter(cidNodes);
-
         for (Map.Entry<String, List<ConnectKeyValue>> entry : taskConfigs.entrySet()) {
             String connectorName = entry.getKey();
             for (ConnectKeyValue task : entry.getValue()) {
-                final Node node = router.routeNode(JSON.toJSONString(task));
+                //直接用UID分配,否则hash结果不均匀
+                final Node node = router.routeNode(task.getString(RuntimeConfigDefine.TASK_UID));
                 if (node.getKey().equals(curWorker)) {
                     //分给自己的
                     allocateResult.getTaskConfigs().putIfAbsent(connectorName, new ArrayList<>());
@@ -79,9 +77,9 @@ public class AllocateTaskStrategyByConsistentHash implements AllocateTaskStrateg
     }
 
     private ConsistentHashRouter<ClientNode> getRouter(Collection<ClientNode> cidNodes) {
-        int virtualNodeCnt = virtualNodes;
-        if (virtualNodeCnt == 0) {
-            virtualNodeCnt = cidNodes.size();
+        int virtualNodeCnt = totalNodes - cidNodes.size();
+        if (virtualNodeCnt <= 0) {
+            virtualNodeCnt = 0;
         }
 
         ConsistentHashRouter<ClientNode> router;

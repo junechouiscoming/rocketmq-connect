@@ -28,6 +28,11 @@ import java.util.*;
 public class RuntimeConfigDefine {
 
     /**
+     * 逐条log打印转发的消息
+     */
+    public static final String LOG_MSG_DETAILS = "logMsgDetails";
+
+    /**
      * The full class name of a specific connector implements.
      */
     public static final String CONNECTOR_CLASS = "connector-class";
@@ -99,7 +104,7 @@ public class RuntimeConfigDefine {
 
     public static final String HASH_FUNC = "consistentHashFunc";
 
-    public static final String VIRTUAL_NODE = "virtualNode";
+    public static final String LEATSET_NODE = "latest_node";
 
     public static final String CONNECT_SHARDINGKEY = "connect-shardingkey";
 

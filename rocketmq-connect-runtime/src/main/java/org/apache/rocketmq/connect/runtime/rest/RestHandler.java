@@ -28,6 +28,7 @@ import org.apache.commons.lang3.StringUtils;
 import org.apache.rocketmq.connect.runtime.ConnectController;
 import org.apache.rocketmq.connect.runtime.common.ConnectKeyValue;
 import org.apache.rocketmq.connect.runtime.common.LoggerName;
+import org.apache.rocketmq.connect.runtime.config.ConnectConfig;
 import org.apache.rocketmq.connect.runtime.config.RuntimeConfigDefine;
 import org.apache.rocketmq.connect.runtime.connectorwrapper.WorkerTask;
 import org.slf4j.Logger;
@@ -63,8 +64,8 @@ public class RestHandler {
         app.get("/getConnectorTask/:connectorName", this::handleQueryConnectorConfig);
         //查看指定connector状态
         app.get("/getConnectorsStatus/:connectorName", this::handleQueryConnectorStatus);
-
-
+        //动态开启message消息log打印或者关闭打印
+        app.get("/logMsgDetail/:trueOrFalse", this::handleLogMsg);
 
         //查看集群信息
         app.get("/getClusterInfo", this::getClusterInfo);
@@ -93,6 +94,17 @@ public class RestHandler {
         //删除
         app.get("/connectors/single/:connectorName/remove", this::handleRemoveConnector);
 
+    }
+
+    private void handleLogMsg(Context context) {
+        String trueOrFalse = context.pathParam("trueOrFalse");
+        try{
+            boolean b = Boolean.parseBoolean(trueOrFalse);
+            ConnectConfig.setLogMsgDetail(b);
+            context.result("succcess");
+        }catch (Exception ex){
+            context.result("failed,param must be true or false !");
+        }
     }
 
 
@@ -152,12 +164,8 @@ public class RestHandler {
         }
         try {
             //mz 创建一个新的connector实例
-            String result = connectController.getConfigManagementService().putNewConnectorConfig(connectorName, configs);
-            if (result != null && result.length() > 0) {
-                context.result(result);
-            } else {
-                context.result("success");
-            }
+            connectController.getConfigManagementService().putNewConnectorConfig(connectorName, configs);
+            context.result("success");
         } catch (Exception e) {
             log.error("Handle createConnector error .", e);
             context.result("failed");
@@ -180,15 +188,11 @@ public class RestHandler {
         }
 
         try {
-            String result = connectController.getConfigManagementService().dynamicUpdateTaskNum(connectorName, Integer.valueOf(taskNum));
-            if (result != null && result.length() > 0) {
-                context.result(result);
-            } else {
-                context.result("success");
-            }
+            String str = connectController.getConfigManagementService().dynamicUpdateTaskNum(connectorName, Integer.valueOf(taskNum));
+            context.result(str==null || str.length()==0?"success":str);
         } catch (Exception e) {
-            log.error("dynamicUpdateTaskNum failed",e);
-            context.result("failed"+e.getMessage());
+            log.error("", e);
+            context.result("failed:"+e.getMessage());
         }
     }
 
@@ -208,15 +212,11 @@ public class RestHandler {
         }
         try {
             //mz 创建一个新的connector实例
-            String result = connectController.getConfigManagementService().updateConnectorConfig(connectorName, configs);
-            if (result != null && result.length() > 0) {
-                context.result(result);
-            } else {
-                context.result("success");
-            }
+            connectController.getConfigManagementService().updateConnectorConfig(connectorName, configs);
+            context.result("success");
         } catch (Exception e) {
-            log.error("Handle createConnector error .", e);
-            context.result("failed");
+            log.error("", e);
+            context.result("failed:"+e.getMessage());
         }
     }
 
@@ -268,36 +268,54 @@ public class RestHandler {
     private void handleEnableAllConnector(Context context) {
         try {
             Map<String, ConnectKeyValue> connectorConfigs = connectController.getConfigManagementService().getConnectorConfigs(RuntimeConfigDefine.CONFIG_DISABLE_LST);
+            StringBuilder msg = new StringBuilder("success");
             for (String connector : connectorConfigs.keySet()) {
-                connectController.getConfigManagementService().enableConnectorConfig(connector);
+                try{
+                    connectController.getConfigManagementService().enableConnectorConfig(connector);
+                }catch (Exception ex){
+                    msg.append("failed:"+ex.getMessage()).append("\n");
+                }
             }
-            context.result("success");
+            context.result(msg.toString());
         } catch (Exception e) {
-            context.result("failed");
+            log.error("", e);
+            context.result("failed:"+e.getMessage());
         }
     }
     //禁用
     private void handleDisableAllConnector(Context context) {
         try {
             Map<String, ConnectKeyValue> connectorConfigs = connectController.getConfigManagementService().getConnectorConfigs(RuntimeConfigDefine.CONFIG_ENABLE_LST);
+            StringBuilder msg = new StringBuilder("success");
             for (String connector : connectorConfigs.keySet()) {
-                connectController.getConfigManagementService().disableConnectorConfig(connector);
+                try{
+                    connectController.getConfigManagementService().disableConnectorConfig(connector);
+                }catch (Exception ex){
+                    msg.append("failed:"+ex.getMessage()).append("\n");
+                }
             }
-            context.result("success");
+            context.result(msg.toString());
         } catch (Exception e) {
-            context.result("failed");
+            log.error("", e);
+            context.result("failed:"+e.getMessage());
         }
     }
     //删除
     private void handleRemoveAllConnector(Context context) {
         try {
             Map<String, ConnectKeyValue> connectorConfigs = connectController.getConfigManagementService().getConnectorConfigs(RuntimeConfigDefine.CONFIG_ENABLE_DISABLE_LST);
+            StringBuilder msg = new StringBuilder("success");
             for (String connector : connectorConfigs.keySet()) {
-                connectController.getConfigManagementService().removeConnectorConfig(connector);
+                try{
+                    connectController.getConfigManagementService().removeConnectorConfig(connector);
+                }catch (Exception ex){
+                    msg.append("failed:"+ex.getMessage()).append("\n");
+                }
             }
-            context.result("success");
+            context.result(msg.toString());
         } catch (Exception e) {
-            context.result("failed");
+            log.error("", e);
+            context.result("failed:"+e.getMessage());
         }
     }
 
@@ -307,11 +325,9 @@ public class RestHandler {
         try {
             String connectorName = context.pathParam("connectorName");
             connectController.getConfigManagementService().enableConnectorConfig(connectorName);
-            context.result("success");
-        }catch (IllegalStateException e){
-            context.result(e.getMessage());
         }catch (Exception e) {
-            context.result("failed");
+            log.error("", e);
+            context.result("failed:"+e.getMessage());
         }
     }
     //禁用
@@ -319,9 +335,10 @@ public class RestHandler {
         try {
             String connectorName = context.pathParam("connectorName");
             connectController.getConfigManagementService().disableConnectorConfig(connectorName);
-            context.result("success");
+            context.result("succcess");
         } catch (Exception e) {
-            context.result("failed");
+            log.error("", e);
+            context.result("failed:"+e.getMessage());
         }
     }
     //删除
@@ -329,9 +346,10 @@ public class RestHandler {
         try {
             String connectorName = context.pathParam("connectorName");
             connectController.getConfigManagementService().removeConnectorConfig(connectorName);
-            context.result("success");
+            context.result("succcess");
         } catch (Exception e) {
-            context.result("failed");
+            log.error("", e);
+            context.result("failed:"+e.getMessage());
         }
     }
 

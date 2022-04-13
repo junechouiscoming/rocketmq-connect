@@ -55,8 +55,8 @@ public interface ConfigManagementService {
      * @return
      * @throws Exception
      */
-    String putNewConnectorConfig(String connectorName, ConnectKeyValue configs) throws Exception;
-    String updateConnectorConfig(String connectorName, ConnectKeyValue configs) throws Exception;
+    void putNewConnectorConfig(String connectorName, ConnectKeyValue configs) throws Exception;
+    void updateConnectorConfig(String connectorName, ConnectKeyValue configs) throws Exception;
 
     /**
      * 动态修改task的并发度 新增Task时候原本的task不会变化

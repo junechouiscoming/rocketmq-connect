@@ -18,26 +18,41 @@
 package org.apache.rocketmq.connect.kafka.connector;
 
 import io.openmessaging.connector.api.data.SourceDataEntry;
+import org.apache.kafka.common.TopicPartition;
 import org.junit.Assert;
 import org.junit.Test;
 
 import java.lang.reflect.Field;
+import java.util.ArrayList;
 import java.util.Collection;
+import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.LinkedBlockingQueue;
 
 public class KafkaSourceTaskTest {
 
     @Test
     public void pollTest() throws Exception {
-        KafkaSourceTask task = new KafkaSourceTask();
-        Field config = KafkaSourceTask.class.getDeclaredField("config");
-        config.setAccessible(true);
+        List<TopicPartition> topicPartitionList = new CopyOnWriteArrayList<>();
 
-        Collection<SourceDataEntry> list = task.poll();
-        Assert.assertEquals(list.size(), 1);
+        topicPartitionList.add(new TopicPartition("s", 0));
+        topicPartitionList.add(new TopicPartition("s", 1));
+        topicPartitionList.add(new TopicPartition("s", 2));
+        topicPartitionList.add(new TopicPartition("d", 1));
+        topicPartitionList.add(new TopicPartition("d", 3));
+        topicPartitionList.add(new TopicPartition("q", 2));
 
-        list = task.poll();
-        Assert.assertEquals(list.size(), 0);
 
+        List<TopicPartition> topicPartitions = new ArrayList<>();
+
+        topicPartitions.add(new TopicPartition("s",2));
+        topicPartitions.add(new TopicPartition("d",1));
+        topicPartitions.add(new TopicPartition("s",2));
+
+        for (TopicPartition partition : topicPartitions) {
+            topicPartitions.remove(partition);
+        }
+
+        System.out.println(topicPartitionList);
     }
 }

@@ -26,6 +26,9 @@ import java.io.File;
  * Configurations for runtime.
  */
 public class ConnectConfig {
+
+    private static volatile boolean logMsgDetail = Boolean.parseBoolean(System.getProperty(RuntimeConfigDefine.LOG_MSG_DETAILS, "false"));
+
     /**
      * The unique ID of each worker instance in the cluster
      */
@@ -344,6 +347,18 @@ public class ConnectConfig {
 
     public void setAdminExtGroup(String adminExtGroup) {
         this.adminExtGroup = adminExtGroup;
+    }
+
+    public static boolean isLogMsgDetail() {
+        return logMsgDetail;
+    }
+
+    public static void setLogMsgDetail(boolean logMsgDetail) {
+        ConnectConfig.logMsgDetail = logMsgDetail;
+    }
+
+    public boolean isAclEnable() {
+        return aclEnable;
     }
 
     @Override public String toString() {

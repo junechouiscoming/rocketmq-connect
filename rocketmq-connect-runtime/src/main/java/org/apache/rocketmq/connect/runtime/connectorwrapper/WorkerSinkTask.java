@@ -30,7 +30,6 @@ import java.nio.ByteBuffer;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicReference;
-import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.function.Consumer;
 
 import org.apache.rocketmq.client.consumer.*;
@@ -41,6 +40,8 @@ import org.apache.rocketmq.common.message.MessageQueue;
 import org.apache.rocketmq.connect.runtime.ConnectController;
 import org.apache.rocketmq.connect.runtime.common.ConnectKeyValue;
 import org.apache.rocketmq.connect.runtime.common.LoggerName;
+import org.apache.rocketmq.connect.runtime.config.ConnectConfig;
+import org.apache.rocketmq.connect.runtime.config.RuntimeConfigDefine;
 import org.apache.rocketmq.connect.runtime.service.PositionManagementService;
 import org.apache.rocketmq.connect.runtime.store.PositionStorageReaderImpl;
 import org.apache.rocketmq.connect.runtime.utils.Plugin;
@@ -100,6 +101,7 @@ public class WorkerSinkTask implements WorkerTask {
     private Converter recordConverter;
 
     private final ConcurrentHashMap<MessageQueue, Long/*下次要消费的位移位置*/> messageQueuesOffsetMap;
+    private final ConcurrentHashMap<MessageQueue, Long/*停止1秒*/> messageQueuesSuspendWhileMap = new ConcurrentHashMap<>();
 
     /**
      * 是否暂停消费
@@ -114,9 +116,6 @@ public class WorkerSinkTask implements WorkerTask {
     private final AtomicReference<WorkerState> workerState;
 
     private final ClassLoader classLoader;
-
-    final ReentrantReadWriteLock readWriteLock = new ReentrantReadWriteLock(true);
-
     /**
      * 避免GC
      */
@@ -160,7 +159,6 @@ public class WorkerSinkTask implements WorkerTask {
      */
     @Override
     public void run() {
-        consumerPullRocketMQ.setConsumerPullTimeoutMillis(2*1000);
         Plugin.compareAndSwapLoaders(this.classLoader);
 
         state.compareAndSet(WorkerTaskState.NEW, WorkerTaskState.PENDING);
@@ -215,31 +213,27 @@ public class WorkerSinkTask implements WorkerTask {
                     @Override
                     public void messageQueueChanged(String topic, Set<MessageQueue> mqAll, Set<MessageQueue> mqDivided) {
                         //负载均衡发生时先提交一次位移,但此时消息还在拉取。所以考虑加个lock锁一下,此时别的节点可能已经开始消费数据并提交位移了，但是别的节点的位移可能有点延迟，还比较早，就会发生重复
-                        readWriteLock.writeLock().lock();
-                        try {
-                            commitOffset();
-                            //只清空当前topic的queue
-                            if (messageQueuesOffsetMap.size()>0) {
-                                for (Map.Entry<MessageQueue, Long> entry : messageQueuesOffsetMap.entrySet()) {
-                                    if (entry.getKey().getTopic().equals(topic)) {
-                                        messageQueuesOffsetMap.remove(entry.getKey());
-                                    }
-                                }
-                            }
+                        commitOffset();
 
-                            for (MessageQueue messageQueue : mqDivided) {
-                                try {
-                                    final long offset = consumerPullRocketMQ.fetchConsumeOffset(messageQueue,true);
-                                    //因为rocketMQ是手动提交位移，且只提交messageQueuesOffsetMap的位移，也就意味着一定已经发送到kafka了
-                                    messageQueuesOffsetMap.put(messageQueue,offset);
-                                }catch (Exception ex){
-                                    log.error("consumer fetchConsumeOffset failed",ex);
+                        //只清空当前topic的queue
+                        if (messageQueuesOffsetMap.size()>0) {
+                            for (Map.Entry<MessageQueue, Long> entry : messageQueuesOffsetMap.entrySet()) {
+                                if (entry.getKey().getTopic().equals(topic)) {
+                                    messageQueuesOffsetMap.remove(entry.getKey());
                                 }
-                                //再用自定义的sink offset覆盖一下
-                                updateOffsetByStore.accept(topic);
                             }
-                        }finally {
-                            readWriteLock.writeLock().unlock();
+                        }
+
+                        for (MessageQueue messageQueue : mqDivided) {
+                            try {
+                                final long offset = consumerPullRocketMQ.fetchConsumeOffset(messageQueue,true);
+                                //因为rocketMQ是手动提交位移，且只提交messageQueuesOffsetMap的位移，也就意味着一定已经发送到kafka了
+                                messageQueuesOffsetMap.put(messageQueue,offset);
+                            }catch (Exception ex){
+                                log.error("consumer fetchConsumeOffset failed",ex);
+                            }
+                            //再用自定义的sink offset覆盖一下
+                            updateOffsetByStore.accept(topic);
                         }
                     }
                 });
@@ -268,20 +262,18 @@ public class WorkerSinkTask implements WorkerTask {
                     }
                 }
                 try {
-                    readWriteLock.readLock().lock();
                     pullMessageFromQueues();
-                }finally {
-                    readWriteLock.readLock().unlock();
+                }catch (Exception ex){
+                    log.error("there is an error but will continue consume msg again until it success",ex);
                 }
             }
 
-
             //normally stop area
-            state.compareAndSet(WorkerTaskState.RUNNING, WorkerTaskState.STOPPING);
             log.info(String.format("Sink task is stopping, config:%s",this));
+            state.compareAndSet(WorkerTaskState.RUNNING, WorkerTaskState.STOPPING);
         } catch (Exception e) {
             log.info(String.format("Sink task is error, config:%s",this),e);
-            state.compareAndSet(WorkerTaskState.RUNNING, WorkerTaskState.ERROR);
+            state.set(WorkerTaskState.ERROR);
             exception = e;
         } finally {
             //release resource area
@@ -323,7 +315,30 @@ public class WorkerSinkTask implements WorkerTask {
     }
 
     private void pullMessageFromQueues() throws MQClientException, RemotingException, MQBrokerException, InterruptedException {
+
+        long nextPullTimestamp  = 0L ;
+        for (MessageQueue queue : messageQueuesOffsetMap.keySet()) {
+            Long next = messageQueuesSuspendWhileMap.get(queue);
+            if (next==null) {
+                nextPullTimestamp = 0L;
+                break;
+            }else{
+                nextPullTimestamp = Math.min(nextPullTimestamp,next==null?0:next);
+            }
+        }
+
+        if (System.currentTimeMillis() > nextPullTimestamp) {
+            //continue pull
+        }else{
+            //所有的queue都没消息则sleep
+            final long sleep = nextPullTimestamp - System.currentTimeMillis();
+            if (sleep > 1000) {
+                Thread.sleep(sleep);
+            }
+        }
+
         log.debug("START pullMessageFromQueues...");
+
         for (Map.Entry<MessageQueue, Long> entry : messageQueuesOffsetMap.entrySet()) {
             if (messageQueuesStateMap.containsKey(entry.getKey())) {
                 continue;
@@ -331,6 +346,11 @@ public class WorkerSinkTask implements WorkerTask {
 
             if (WorkerTaskState.RUNNING != state.get()) {
                 break;
+            }
+
+            final Long nextPullTime = messageQueuesSuspendWhileMap.get(entry.getKey());
+            if (nextPullTime!=null && nextPullTime > System.currentTimeMillis()) {
+                continue;
             }
             final PullResult pullResult = consumerPullRocketMQ.pull(entry.getKey(), "*", entry.getValue(), MAX_MESSAGE_NUM);
 
@@ -341,19 +361,21 @@ public class WorkerSinkTask implements WorkerTask {
                 //如果抛出异常，那么不会提交位移
                 try {
                     receiveMessages(messages);
-                }catch (Exception ex){
-                    //如果抛出异常,每个Queue按照之前的offset再重新消费一次 直到成功或者任务被手动终止
+                }catch (Throwable ex){
+                    //如果抛出异常,每个Queue按照之前的offset再重新消费一次 直到成功或者任务被手动终止，这里continue掉不更新位移，然后继续消费下一个messageQueue
                     //TODO 发送到告警信息里面
-                    throw new RuntimeException("receiveMessages failed",ex);
+                    log.error("receiveMessages failed but will continue consume msg again until it success",ex);
+                    messageQueuesSuspendWhileMap.put(entry.getKey(), System.currentTimeMillis() + 1000);
+                    continue;
                 }
+
                 //更新消费位移,如果此时已经发生重平衡,原先的queue不属于自己了,那么位移还是要提交的。这里一定会造成消息重复。另外原本的rocketMQ的offset提交机制应该也会重复。
                 messageQueuesOffsetMap.put(entry.getKey(), pullResult.getNextBeginOffset());
                 //放到这个service里面的会同步到rocketMQ上其他节点 有必要吗？大家都是同一个消费组，既然是同一个消费组那么位移本来就在broker有保存，何必同步给其他节点？
                 offsetManagementService.putPosition(convertToByteBufferKey(entry.getKey()), convertToByteBufferValue(pullResult.getNextBeginOffset()));
             }else{
-                try {
-                    Thread.sleep(500);
-                } catch (InterruptedException e) {}
+                //如果本queue没拉到消息就延迟5秒
+                messageQueuesSuspendWhileMap.put(entry.getKey(), System.currentTimeMillis() + 5000);
             }
         }
     }
@@ -363,21 +385,16 @@ public class WorkerSinkTask implements WorkerTask {
      * 另外自己上线以后，会发ONLINE消息出去，然后别的节点收到消息就会推一次offset的消息过来，本节点就可以直接更新缓存了，因为本地json文件肯定是落后了一点点它是定时持久化的
      */
     private void commitOffset() {
-        readWriteLock.readLock().lock();
-        try {
-            //提交位移,对于fileSinkTask而言，这个就是调用一个flush操作,应该只是一个钩子函数，理论上sink端的位移提交框架要自动处理的.这里注掉，完全没用
-            for (Map.Entry<MessageQueue, Long/*下次要消费的位移位置*/> entry : messageQueuesOffsetMap.entrySet()) {
-                try {
-                    if (entry.getValue()==null) {
-                        continue;
-                    }
-                    consumerPullRocketMQ.updateConsumeOffset(entry.getKey(),entry.getValue());
-                } catch (MQClientException e) {
-                    log.error("updateConsumeOffset offset failed",e);
+        //提交位移,对于fileSinkTask而言，这个就是调用一个flush操作,应该只是一个钩子函数，理论上sink端的位移提交框架要自动处理的.这里注掉，完全没用
+        for (Map.Entry<MessageQueue, Long/*下次要消费的位移位置*/> entry : messageQueuesOffsetMap.entrySet()) {
+            try {
+                if (entry.getValue()==null) {
+                    continue;
                 }
+                consumerPullRocketMQ.updateConsumeOffset(entry.getKey(),entry.getValue());
+            } catch (MQClientException e) {
+                log.error("updateConsumeOffset offset failed",e);
             }
-        }finally {
-            readWriteLock.readLock().unlock();
         }
         log.debug("workSinkTask commit offset finish...");
     }
@@ -394,8 +411,8 @@ public class WorkerSinkTask implements WorkerTask {
      */
     private void receiveMessages(List<MessageExt> messages) {
         for (MessageExt message : messages) {
-            if (log.isDebugEnabled()) {
-                log.debug("Sink Received one message:%s",new String(message.getBody()==null?new byte[0]:message.getBody()));
+            if (ConnectConfig.isLogMsgDetail()) {
+                log.info("Sink Received one message:"+new String(message.getBody()==null?new byte[0]:message.getBody()));
             }
             SinkDataEntry sinkDataEntry = convertToSinkDataEntry(message);
             sinkDataEntries.add(sinkDataEntry);

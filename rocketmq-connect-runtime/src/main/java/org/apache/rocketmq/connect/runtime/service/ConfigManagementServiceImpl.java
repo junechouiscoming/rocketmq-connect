@@ -130,17 +130,17 @@ public class ConfigManagementServiceImpl implements ConfigManagementService {
     }
 
     @Override
-    public synchronized String dynamicUpdateTaskNum(String connectorName, int newTaskNum) throws Exception {
+    public synchronized String dynamicUpdateTaskNum(String connectorName, int newTaskNum) {
         //只要以前存在，就不允许覆盖，只能删除旧的然后新增新的
         ConnectKeyValue exist = connectorKeyValueStore.get(connectorName);
         if (exist != null) {
             boolean isRemoved = exist.getInt(RuntimeConfigDefine.CONFIG_STATUS) == RuntimeConfigDefine.CONFIG_STATUS_REMOVE;
             if (isRemoved) {
                 //已移除的话就可以继续覆盖新增配置,已移除的配置在各节点均不会得到任何有效处理,例如分配Task执行.只是内存或者配置文件可能会驻留
-                return "Connector was already removed.";
+                throw new IllegalArgumentException("Connector was already removed.");
             }
         }else{
-            return "the Connector not exists";
+            throw new IllegalArgumentException("the Connector not exists");
         }
 
         //不管是否禁用，直接扩充Task数量即可
@@ -174,7 +174,7 @@ public class ConfigManagementServiceImpl implements ConfigManagementService {
                 }
             }
         }else{
-            return "the old task nums is zero , so can`t increase it , you can remove and create a new connector which taskNum greater than zero";
+            throw new UnsupportedOperationException("the old task nums is zero , so can`t increase it , you can remove and create a new connector which taskNum greater than zero");
         }
 
         //重新赋值taskID序号
@@ -199,10 +199,10 @@ public class ConfigManagementServiceImpl implements ConfigManagementService {
     }
 
     @Override
-    public synchronized String updateConnectorConfig(String connectorName, ConnectKeyValue configs) throws Exception {
+    public synchronized void updateConnectorConfig(String connectorName, ConnectKeyValue configs) throws Exception {
 
         if (configs.getProperties().size()==1 && configs.containsKey(RuntimeConfigDefine.TASK_NUM)) {
-            return "if you only want to change the num of task , you should use '/connectors/taskNum/:connectorName/:taskNum' to change it ！";
+            throw new IllegalArgumentException("if you only want to change the num of task , you should use '/connectors/taskNum/:connectorName/:taskNum' to change it ！");
         }
 
         //只要以前存在，就不允许覆盖，只能删除旧的然后新增新的
@@ -211,10 +211,10 @@ public class ConfigManagementServiceImpl implements ConfigManagementService {
             boolean isRemoved = exist.getInt(RuntimeConfigDefine.CONFIG_STATUS) == RuntimeConfigDefine.CONFIG_STATUS_REMOVE;
             if (isRemoved) {
                 //已移除的话就可以继续覆盖新增配置,已移除的配置在各节点均不会得到任何有效处理,例如分配Task执行.只是内存或者配置文件可能会驻留
-                return "Connector was already removed.";
+                throw new IllegalArgumentException("Connector was already removed.");
             }
         }else{
-            return "the Connector not exists";
+            throw new IllegalArgumentException("the Connector not exists");
         }
 
 
@@ -231,7 +231,7 @@ public class ConfigManagementServiceImpl implements ConfigManagementService {
         //mz 检查参数的kv对必须含有必要的某个key例如 connector-class
         for (String requireConfig : RuntimeConfigDefine.REQUEST_CONFIG) {
             if (!configs.containsKey(requireConfig)) {
-                return "after update still Request config key: " + requireConfig;
+                throw new IllegalArgumentException("after update still Request config key: " + requireConfig);
             }
         }
 
@@ -249,18 +249,17 @@ public class ConfigManagementServiceImpl implements ConfigManagementService {
         //mz 校验并把url参数的config设置到connector中
         String errorMessage = connector.verifyAndSetConfig(configs);
         if (errorMessage != null && errorMessage.length() > 0) {
-            return errorMessage;
+            throw new IllegalArgumentException(errorMessage);
         }
         //mz 把connectorName及其对应的config保存在缓存中，这个name就是URL path中指定的connectorName
         connectorKeyValueStore.put(connectorName, configs);
 
         //mz 重新计算,也就是初始化task
         recomputeTaskConfigs(connectorName, connector, currentTimestamp);
-        return "";
     }
 
     @Override
-    public synchronized String putNewConnectorConfig(String connectorName, ConnectKeyValue configs) throws Exception {
+    public synchronized void putNewConnectorConfig(String connectorName, ConnectKeyValue configs) throws Exception {
 
         //只要以前存在，就不允许覆盖，只能删除旧的然后新增新的
         ConnectKeyValue exist = connectorKeyValueStore.get(connectorName);
@@ -269,7 +268,7 @@ public class ConfigManagementServiceImpl implements ConfigManagementService {
             if (isRemoved) {
                 //已移除的话就可以继续覆盖新增配置,已移除的配置在各节点均不会得到任何有效处理,例如分配Task执行.只是内存或者配置文件可能会驻留
             }else{
-                return "Connector with same config already exist.";
+                throw new IllegalArgumentException("Connector with same config already exist.");
             }
         }
 
@@ -280,7 +279,7 @@ public class ConfigManagementServiceImpl implements ConfigManagementService {
         //mz 检查参数的kv对必须含有必要的某个key例如 connector-class
         for (String requireConfig : RuntimeConfigDefine.REQUEST_CONFIG) {
             if (!configs.containsKey(requireConfig)) {
-                return "Request config key: " + requireConfig;
+                throw new IllegalArgumentException("Request config key: " + requireConfig);
             }
         }
 
@@ -298,14 +297,13 @@ public class ConfigManagementServiceImpl implements ConfigManagementService {
         //mz 校验并把url参数的config设置到connector中
         String errorMessage = connector.verifyAndSetConfig(configs);
         if (errorMessage != null && errorMessage.length() > 0) {
-            return errorMessage;
+            throw new IllegalArgumentException(errorMessage);
         }
         //mz 把connectorName及其对应的config保存在缓存中，这个name就是URL path中指定的connectorName
         connectorKeyValueStore.put(connectorName, configs);
 
         //mz 重新计算,也就是初始化task
         recomputeTaskConfigs(connectorName, connector, currentTimestamp);
-        return "";
     }
 
     @Override
@@ -353,9 +351,12 @@ public class ConfigManagementServiceImpl implements ConfigManagementService {
     @Override
     public synchronized void removeConnectorConfig(String connectorName) {
         ConnectKeyValue config = connectorKeyValueStore.get(connectorName);
+        if (config==null) {
+            throw new IllegalArgumentException(String.format("the connector with name %s not exists!",connectorName));
+        }
 
         if (config.getInt(RuntimeConfigDefine.CONFIG_STATUS)==RuntimeConfigDefine.CONFIG_STATUS_REMOVE) {
-            return;
+            throw new IllegalArgumentException("the connector had already been removed");
         }
 
         config.put(RuntimeConfigDefine.UPDATE_TIMESTAMP, System.currentTimeMillis());
@@ -375,8 +376,12 @@ public class ConfigManagementServiceImpl implements ConfigManagementService {
 
         ConnectKeyValue config = connectorKeyValueStore.get(connectorName);
 
+        if (config==null) {
+            throw new IllegalArgumentException(String.format("the connector with name %s not exists!",connectorName));
+        }
+
         if (config.getInt(RuntimeConfigDefine.CONFIG_STATUS)==RuntimeConfigDefine.CONFIG_STATUS_DISABLE) {
-            return;
+            throw new IllegalArgumentException("the connector had been disabled");
         }
 
         config.put(RuntimeConfigDefine.UPDATE_TIMESTAMP, System.currentTimeMillis());
@@ -397,8 +402,9 @@ public class ConfigManagementServiceImpl implements ConfigManagementService {
     public synchronized void enableConnectorConfig(String connectorName) throws IllegalStateException {
 
         ConnectKeyValue config = connectorKeyValueStore.get(connectorName);
-        if (config.getInt(RuntimeConfigDefine.CONFIG_STATUS)==RuntimeConfigDefine.CONFIG_STATUS_ENABLE) {
-            return;
+
+        if (config==null) {
+            throw new IllegalArgumentException(String.format("the connector with name %s not exists!",connectorName));
         }
 
         if (config.getInt(RuntimeConfigDefine.CONFIG_STATUS)==RuntimeConfigDefine.CONFIG_STATUS_REMOVE) {

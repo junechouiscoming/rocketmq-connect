@@ -124,6 +124,8 @@ public class WorkerDirectTask implements WorkerTask {
         } catch (Exception e) {
             log.error("Run task failed.", e);
             state.set(WorkerTaskState.ERROR);
+        }finally {
+            state.compareAndSet(WorkerTaskState.STOPPING, WorkerTaskState.STOPPED);
         }
     }
 

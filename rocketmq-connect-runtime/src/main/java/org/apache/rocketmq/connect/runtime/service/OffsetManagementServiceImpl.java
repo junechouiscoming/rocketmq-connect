@@ -261,7 +261,7 @@ public class OffsetManagementServiceImpl implements PositionManagementService {
                         changed = true;
                         existedEntry.setValue(newEntry.getValue());
                     }else{
-                        logger.info("receive a lower offset and will ignore it");
+                        //logger.info("receive a lower offset and will ignore it");
                     }
                     break;
                 }

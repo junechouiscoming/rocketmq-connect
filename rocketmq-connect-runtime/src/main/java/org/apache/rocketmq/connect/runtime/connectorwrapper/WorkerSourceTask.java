@@ -29,6 +29,8 @@ import io.openmessaging.connector.api.source.SourceTaskContext;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
 import org.apache.rocketmq.client.producer.DefaultMQProducer;
@@ -40,9 +42,11 @@ import org.apache.rocketmq.common.message.MessageQueue;
 import org.apache.rocketmq.connect.runtime.ConnectController;
 import org.apache.rocketmq.connect.runtime.common.ConnectKeyValue;
 import org.apache.rocketmq.connect.runtime.common.LoggerName;
+import org.apache.rocketmq.connect.runtime.config.ConnectConfig;
 import org.apache.rocketmq.connect.runtime.service.PositionManagementService;
 import org.apache.rocketmq.connect.runtime.store.PositionStorageReaderImpl;
 import org.apache.rocketmq.connect.runtime.utils.Plugin;
+import org.checkerframework.checker.units.qual.C;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -171,11 +175,11 @@ public class WorkerSourceTask implements WorkerTask {
                 }
             }
             //normally stop area
-            state.compareAndSet(WorkerTaskState.RUNNING, WorkerTaskState.STOPPING);
             log.info(String.format("Source task is stopping, config:%s",this));
+            state.compareAndSet(WorkerTaskState.RUNNING, WorkerTaskState.STOPPING);
         } catch (Throwable e) {
             exception = e;
-            state.compareAndSet(WorkerTaskState.RUNNING,WorkerTaskState.ERROR);
+            state.set(WorkerTaskState.ERROR);
         } finally {
             //release resource area
             try{
@@ -183,12 +187,15 @@ public class WorkerSourceTask implements WorkerTask {
             }catch (Exception ex){
                 log.error("",ex);
             }
+
             try{
                 sourceTask.stop();
             }catch (Exception ex){
                 log.error("",ex);
             }
+
             state.compareAndSet(WorkerTaskState.STOPPING, WorkerTaskState.STOPPED);
+
             if (exception==null) {
                 log.info(String.format("Source task is stopped, config:%s",this));
             }else{
@@ -213,6 +220,8 @@ public class WorkerSourceTask implements WorkerTask {
     private void sendRecord(Collection<SourceDataEntry> sourceDataEntries) {
         SendCallback sendCallback;
 
+        CountDownLatch countDownLatch = new CountDownLatch(sourceDataEntries.size());
+
         for (SourceDataEntry sourceDataEntry : sourceDataEntries) {
             //这个partition在kafka connect中 = record.topic() + "-" + record.partition()
             ByteBuffer partition = sourceDataEntry.getSourcePartition();
@@ -232,7 +241,7 @@ public class WorkerSourceTask implements WorkerTask {
                 sourceMessage.setKeys(new String(key));
             }
             sourceMessage.putUserProperty("by_connector","true");
-            sourceMessage.setBody(value);
+            sourceMessage.setBody(value.length==0?"default empty body for no exception to send".getBytes(StandardCharsets.UTF_8):value);
             //header
             if (header!=null) {
                 List<String> hLst = new ArrayList<>();
@@ -242,33 +251,29 @@ public class WorkerSourceTask implements WorkerTask {
                 }
             }
 
-            //TODO 如果第一次这里消息send失败了，那么第二条消息拉回来在这里send，会不会覆盖掉。导致漏消息。
-            //理论上拉取消息时候应该指定位移把
-
+            //拉取消息时候指定位移
             sendCallback = new SendCallback() {
                 @Override
                 public void onSuccess(SendResult result) {
-                    log.info("Successful send message to RocketMQ:{}", result.getMsgId());
-                    try {
-                        if (null != partition && null != position) {
-                            //对于kafka-connect这里partition就是topic+分区号,positio就是record的offset
-                            //如果这里发送成功，但是callback因为宕机等没能执行，那么这条消息的位移无法提交，也就是positionManagementService无法提交，
-                            // 那么下次拉取消息已更改还是会从上个位置拉取poll，那么就会造成消息再次投递到rocketMQ导致重复了
-                            positionManagementService.putPosition(partition, position);
-                        }
-                    } catch (Exception e) {
-                        log.error("Source task save position info failed.", e);
+                    countDownLatch.countDown();
+                    if (null != partition && null != position) {
+                        //对于kafka-connect这里partition就是topic+分区号,position就是record的offset
+                        //如果这里发送成功，但是callback因为宕机等没能执行，那么这条消息的位移无法提交，也就是positionManagementService无法提交，
+                        // 那么下次拉取消息已更改还是会从上个位置拉取poll，那么就会造成消息再次投递到rocketMQ导致重复了
+                        positionManagementService.putPosition(partition, position);
+                    }
+                    if (ConnectConfig.isLogMsgDetail()) {
+                        log.info("Successful send message to RocketMQ: kafka offset:{},rocketMQ msgID:{}",new String(partition.array())+":"+new String(position.array()), result.getMsgId());
                     }
                 }
 
                 @Override
                 public void onException(Throwable throwable) {
                     if (null != throwable) {
-                        log.error("Source task send record failed {}.", throwable);
+                        log.error(String.format("send msg to rocketMQ failed on sendCallBack. %s",sourceMessage), throwable);
                     }
                 }
             };
-
             try {
                 //需要设置messageQueueSelector 如果kafka的key不null的话,这样从kafka拉下来就都能send到同一个rocketMQ的queue里了
                 if (sourceMessage.getKeys()!=null && sourceMessage.getKeys().length()>0) {
@@ -283,9 +288,19 @@ public class WorkerSourceTask implements WorkerTask {
                     producerToRocketMQ.send(sourceMessage,sendCallback);
                 }
             } catch (Exception e) {
-                log.error("Send message error. message: {}, error info: {}.", sourceMessage, e);
+                log.error("Send message to rocketMQ error. message: {}", sourceMessage, e);
                 throw new RuntimeException(e);
             }
+        }
+
+        try {
+            final boolean await = countDownLatch.await(10 * 1000, TimeUnit.MILLISECONDS);
+            if (!await) {
+                //timeout
+                throw new RuntimeException("countDownLatch time out...");
+            }
+        } catch (InterruptedException e) {
+            throw new RuntimeException("countDownLatch interrupt",e);
         }
     }
 

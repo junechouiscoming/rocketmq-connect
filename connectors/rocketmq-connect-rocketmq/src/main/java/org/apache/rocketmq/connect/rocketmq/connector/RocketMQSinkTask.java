@@ -17,8 +17,7 @@ import org.slf4j.LoggerFactory;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
 import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.TimeUnit;
 
 /**
  * rocketMQ消费位移的提交不在这里处理，而在框架里面，只要不抛异常出去就会提交最新位移
@@ -30,29 +29,6 @@ public class RocketMQSinkTask extends SinkTask {
     private KeyValue config;
     private static final byte[] TRUE_BYTES = "true".getBytes(StandardCharsets.UTF_8);
 
-
-    final AtomicReference<CountDownLatch> countDownLatchWrapper = new AtomicReference();
-    final AtomicInteger count = new AtomicInteger(0);
-    final AtomicReference<Exception> ex = new AtomicReference();
-    final Callback callback = (metadata, exception) -> {
-        try {
-            count.incrementAndGet();
-            ex.set(exception);
-        } catch (Exception e) {
-            e.printStackTrace();
-        }finally {
-            countDownLatchWrapper.get().countDown();
-        }
-    };
-
-    private Object[] payload;
-    private Schema schema;
-    private Field header;
-    private String topic;
-    private Field key;
-    private Field value;
-    private Map<String,String> headerPayLoad;
-
     /**
      * send to kafka 针对单线程0 GC的目标做了一定优化，不能在多线程环境下跑哈
      * @param sinkDataEntries
@@ -63,10 +39,21 @@ public class RocketMQSinkTask extends SinkTask {
             return;
         }
 
-        //reset
-        countDownLatchWrapper.set(new CountDownLatch(sinkDataEntries.size()));
-        count.set(0);
-        ex.set(null);
+        Object[] payload;
+        Schema schema;
+        Field header;
+        String topic;
+        Field key;
+        Field value;
+        Map<String,String> headerPayLoad;
+
+        final CountDownLatch countDownLatch = new CountDownLatch(sinkDataEntries.size());
+        Callback callback = (metadata, exception) -> {
+            countDownLatch.countDown();
+            if (exception!=null) {
+                logger.error("msg send to kafka failed async",exception);
+            }
+        };
 
         for (SinkDataEntry entry : sinkDataEntries) {
 
@@ -77,6 +64,7 @@ public class RocketMQSinkTask extends SinkTask {
             topic = null;
             key = null;
             value = null;
+
 
             payload = entry.getPayload();
             schema = entry.getSchema();
@@ -105,22 +93,16 @@ public class RocketMQSinkTask extends SinkTask {
             //这tm是异步啊,差点就写BUG了
             ProducerRecord record = new ProducerRecord(topic,null,payload[key.getIndex()], Bytes.wrap((byte[]) payload[value.getIndex()]),headerList);
             //logger.info("kafka msg send:"+new String((byte[]) payload[value.getIndex()]));
-            kafkaProducer.send(record, callback);
+            kafkaProducer.send(record,callback);
         }
         try {
-            countDownLatchWrapper.get().await();
-        } catch (InterruptedException e) {
-            logger.error("",e);
-        }
-
-        //有失败或者被中断，需要检查下刚才的消息是否全部处理成功，否则抛出异常
-        int i = count.get();
-        if (i != sinkDataEntries.size() || ex.get()!=null) {
-            if (ex.get()!=null) {
-                throw new RuntimeException("",ex.get());
-            }else{
-                throw new RuntimeException(String.format("sink was Interrupted but has not processed all sinkDataEntries: %s of %s",i,sinkDataEntries.size()));
+            final boolean await = countDownLatch.await(15 * 1000, TimeUnit.MILLISECONDS);
+            if (!await) {
+                //超时了
+                throw new RuntimeException("countDownLatch time out when send msg to kafka and will consume rocketMQ message again");
             }
+        } catch (InterruptedException e) {
+            throw new RuntimeException("countDownLatch was interrupted when send msg to kafka and will consume rocketMQ message again");
         }
     }
 

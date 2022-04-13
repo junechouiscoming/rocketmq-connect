@@ -17,6 +17,7 @@
 
 package org.apache.rocketmq.connect.kafka.connector;
 
+import io.netty.util.concurrent.DefaultThreadFactory;
 import io.openmessaging.KeyValue;
 import io.openmessaging.connector.api.data.*;
 import io.openmessaging.connector.api.source.SourceTask;
@@ -34,12 +35,7 @@ import java.nio.charset.Charset;
 import java.nio.charset.CharsetDecoder;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
-import java.util.concurrent.CopyOnWriteArrayList;
-import java.util.concurrent.Executors;
-import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.locks.ReentrantReadWriteLock;
-import java.util.concurrent.locks.StampedLock;
+import java.util.concurrent.CopyOnWriteArraySet;
 
 /**
  *  连接器实例属于逻辑概念，其负责维护特定数据系统的相关配置，比如链接地址、需要同步哪些数据等信息；
@@ -50,29 +46,52 @@ import java.util.concurrent.locks.StampedLock;
  */
 public class KafkaSourceTask extends SourceTask {
 
+    private static DefaultThreadFactory defaultThreadFactory = new DefaultThreadFactory("kafkaOffsetCommit-");
+
     private static final Logger log = LoggerFactory.getLogger(KafkaSourceTask.class);
     private KafkaConsumer<ByteBuffer, ByteBuffer> consumer;
     private KeyValue config;
     private List<String> topicList;
     //这currentTPList 线程不安全，重平衡发生时候是并发的
-    private final List<TopicPartition> currentTPList = new CopyOnWriteArrayList<>();
+    private final Set<TopicPartition> currentTPList = new CopyOnWriteArraySet<>();
     private static final byte[] TRUE_BYTES = "true".getBytes(StandardCharsets.UTF_8);
     //启动定时任务提交位移
-    private ScheduledExecutorService scheduledExecutorService = Executors.newScheduledThreadPool(1);
     private MyOffsetCommitCallback commitCallback =  new MyOffsetCommitCallback();
 
-    private ReentrantReadWriteLock partitionLock = new ReentrantReadWriteLock(true);
+    private long nextCommitstamp = 0l;
+    private long commitInterval = 2000;
     @Override
     public Collection<SourceDataEntry> poll() {
         try {
 
             ArrayList<SourceDataEntry> entries = new ArrayList<>();
-            //这应该不用加锁
-            ConsumerRecords<ByteBuffer, ByteBuffer> records = consumer.poll(500);
+            ConsumerRecords<ByteBuffer, ByteBuffer> records;
+
+            //注意consumer非线程安全，所以提交位移时候的定时线程会导致consumer报错
+
+            if (nextCommitstamp==0l || System.currentTimeMillis() > nextCommitstamp) {
+                commitOffset(currentTPList);
+                nextCommitstamp = System.currentTimeMillis() + commitInterval;
+            }
+
+            for (TopicPartition tp : currentTPList) {
+                final ByteBuffer topicBuffer = ByteBuffer.wrap((tp.topic() + "-" + tp.partition()).getBytes());
+
+                final ByteBuffer position = context.positionStorageReader().getPosition(topicBuffer);
+                if (position == null) {
+                    //do nothing
+                } else {
+                    //发送到rocketMQ成功后会更新消费位移,那边也是同步块代码,等又来到这边以后,正常情况下位移都提交了
+                    long local_offset = Long.parseLong(new String(position.array()));
+                    consumer.seek(tp, local_offset+1);
+                }
+            }
+
+            records = consumer.poll(2000);
 
             for (ConsumerRecord<ByteBuffer, ByteBuffer> record : records) {
                 String topic_partition = record.topic() + "-" + record.partition();
-                log.info("Received {} record: {} ", topic_partition, record);
+                log.debug("Received {} record: {} ", topic_partition, record);
                 //header
                 Headers headers = record.headers();
                 Map<String, byte[]> map = new HashMap<>(4);
@@ -164,15 +183,6 @@ public class KafkaSourceTask extends SourceTask {
             }
         }
 
-        scheduledExecutorService.scheduleWithFixedDelay(new Runnable() {
-            @Override
-            public void run() {
-                synchronized (currentTPList){
-                    commitOffset(currentTPList, false);
-                }
-            }
-        },3000,1000, TimeUnit.MILLISECONDS);
-
         consumer.subscribe(topicList, new MyRebalanceListener());
         log.info("source task subscribe topicList {}", topicList);
     }
@@ -180,16 +190,14 @@ public class KafkaSourceTask extends SourceTask {
     @Override
     public void stop() {
         log.info("source task stop enter");
-        try{
-            scheduledExecutorService.shutdown();
-            scheduledExecutorService.awaitTermination(5 * 1000 * 60, TimeUnit.MILLISECONDS);
-        }catch (Exception ex){
-            log.warn("",ex);
-        }
         try {
-            synchronized (currentTPList){
-                commitOffset(currentTPList, true);
+
+            try{
+                commitOffset(new HashSet<>(currentTPList));
+            }catch (Exception ex){
+                log.error("commit kafka Offset failed when stop",ex);
             }
+
             consumer.wakeup(); // wakeup poll in other thread
             consumer.close();
         } catch (Exception e) {
@@ -228,7 +236,7 @@ public class KafkaSourceTask extends SourceTask {
             String topic_partition = charBuffer.toString();
             int index = topic_partition.lastIndexOf('-');
             if (index != -1 && index > 1) {
-                String topic = topic_partition.substring(0, index - 1);
+                String topic = topic_partition.substring(0, index);
                 int partition = Integer.parseInt(topic_partition.substring(index + 1));
                 return new TopicPartition(topic, partition);
             }
@@ -247,12 +255,10 @@ public class KafkaSourceTask extends SourceTask {
      * 而且这个提交位移好像不是定时提交，只在stop和发生重平衡才会提交位移。这个问题不是会很大吗。不会,已经 ENABLE_AUTO_COMMIT_CONFIG 也就是自动你提交参数打开了
      * TODO kafka的自动位移提交应该不行，因为未必发送到rocketMQ是成功的，所以消费位移也得以rocketMQ发送出去的消息的位移为准
      * @param tpList
-     * @param sync 是否同步执行
      */
-    private void commitOffset(Collection<TopicPartition> tpList, boolean sync) {
+    private void commitOffset(Collection<TopicPartition> tpList) {
         if(tpList == null || tpList.isEmpty())
             return;
-
         List<ByteBuffer> topic_partition_list = new ArrayList<>();
         for (TopicPartition tp : tpList) {
             //如果重平衡正好发生，此时正在迭代。是不是有问题？所以改成了copyOnWriteArrayList
@@ -272,18 +278,14 @@ public class KafkaSourceTask extends SourceTask {
                     long local_offset = Long.parseLong(new String(entry.getValue().array()));
                     commitOffsets.put(tp, new OffsetAndMetadata(local_offset));
                 } catch (Exception e) {
-                    log.warn("commitOffset get local offset exception {}", e);
+                    log.warn("commit kafka Offset get local offset exception {}", e);
                 }
             }
         }
 
         if (!commitOffsets.isEmpty()) {
-            if (sync) {
-                consumer.commitSync(commitOffsets);
-                commitCallback.onComplete(commitOffsets,null);
-            } else {
-                consumer.commitAsync(commitOffsets,commitCallback);
-            }
+            consumer.commitSync(commitOffsets);
+            commitCallback.onComplete(commitOffsets,null);
         }
     }
 
@@ -292,9 +294,9 @@ public class KafkaSourceTask extends SourceTask {
         @Override
         public void onComplete(Map<TopicPartition, OffsetAndMetadata> map, Exception e) {
             if (e != null) {
-                log.warn("commit async excepiton", e);
+                log.warn("commit kafka Offset async excepiton", e);
                 map.entrySet().stream().forEach((Map.Entry<TopicPartition, OffsetAndMetadata> entry) -> {
-                    log.warn("commit exception, TopicPartition: {} offset: {}", entry.getKey().toString(), entry.getValue().offset());
+                    log.warn("commit kafka Offset exception, TopicPartition: {} offset: {}", entry.getKey().toString(), entry.getValue().offset());
                 });
                 return;
             }
@@ -305,13 +307,8 @@ public class KafkaSourceTask extends SourceTask {
 
         @Override
         public void onPartitionsAssigned(Collection<TopicPartition> partitions) {
-            synchronized (currentTPList){
-                currentTPList.clear();
-                for (TopicPartition tp : partitions) {
-                    log.info("onPartitionsAssigned TopicPartition {}", tp);
-                    currentTPList.add(tp);
-                }
-            }
+            currentTPList.addAll(partitions);
+            log.info("onPartitionsAssigned Partitions {}",partitions);
         }
 
         /**
@@ -320,11 +317,13 @@ public class KafkaSourceTask extends SourceTask {
          */
         @Override
         public void onPartitionsRevoked(Collection<TopicPartition> partitions) {
-            log.info("onPartitionsRevoked {} Partitions revoked", KafkaSourceTask.this);
-            try {
-                commitOffset(partitions, false);
-            } catch (Exception e) {
-                log.warn("onPartitionsRevoked exception", e);
+            log.info("onPartitionsRevoked Partitions revoked {},{}",Thread.currentThread().getName(),partitions);
+            try{
+                commitOffset(partitions);
+            }catch (Exception ex){
+                log.error("commit kafka Offset when onPartitionsRevoked Partitions revoked failed",ex);
+            }finally {
+                currentTPList.clear();
             }
         }
     }
