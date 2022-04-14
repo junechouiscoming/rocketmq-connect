@@ -17,9 +17,11 @@
 
 package org.apache.rocketmq.connect.runtime.service;
 
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.stream.Collectors;
 
 import com.alibaba.fastjson.JSON;
 import com.alibaba.fastjson.serializer.SerializerFeature;
@@ -103,7 +105,10 @@ public class RebalanceImpl {
             allTasks = configManagementService.getTaskConfigs(RuntimeConfigDefine.CONFIG_ENABLE_LST);
         }
 
-        AllocateResultConfigs allocateResult = allocateTaskStrategy.allocate(curAliveWorkers, clusterManagementService.getCurrentWorker(), allTasks);
+        //与cluster-consumer的instanceName相关
+        final List<String> allWorkers = curAliveWorkers.stream().map(v -> v.split("@")[1].split("#")[2]).collect(Collectors.toList());
+        final String currWorker = clusterManagementService.getCurrentWorker().split("@")[1].split("#")[2];
+        AllocateResultConfigs allocateResult = allocateTaskStrategy.allocate(allWorkers,currWorker, allTasks);
         updateProcessConfigsInRebalance(allocateResult);
 
         log.debug("doRebalance Current ConnectorConfigs : " + JSON.toJSONString(allConnectors,SerializerFeature.PrettyFormat));

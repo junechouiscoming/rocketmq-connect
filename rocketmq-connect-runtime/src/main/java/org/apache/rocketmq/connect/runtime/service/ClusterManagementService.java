@@ -17,6 +17,8 @@
 
 package org.apache.rocketmq.connect.runtime.service;
 
+import org.apache.rocketmq.common.protocol.body.ConsumerConnection;
+
 import java.util.List;
 
 /**
@@ -58,6 +60,8 @@ public interface ClusterManagementService {
     void registerListener(WorkerStatusListener listener);
 
     String getCurrentWorker();
+
+    ConsumerConnection fetchConsumerConnection();
 
     interface WorkerStatusListener {
 

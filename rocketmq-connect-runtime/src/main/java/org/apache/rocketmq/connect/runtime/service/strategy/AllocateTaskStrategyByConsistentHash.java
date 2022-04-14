@@ -38,10 +38,10 @@ public class AllocateTaskStrategyByConsistentHash implements AllocateTaskStrateg
 
     private int virtualNodes;
     private HashFunction hashFunc;
-    int totalNodes = 300;
+    int totalNodes = 2000;
 
     public AllocateTaskStrategyByConsistentHash() {
-        totalNodes = Integer.parseInt(System.getProperty(RuntimeConfigDefine.LEATSET_NODE, "300"));
+        totalNodes = Integer.parseInt(System.getProperty(RuntimeConfigDefine.LEATSET_NODE, "2000"));
         String funcName = System.getProperty(RuntimeConfigDefine.HASH_FUNC);
         if (StringUtils.isNoneEmpty(funcName)) {
             try {

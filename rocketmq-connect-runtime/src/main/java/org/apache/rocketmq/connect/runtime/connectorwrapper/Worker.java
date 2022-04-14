@@ -31,6 +31,7 @@ import org.apache.commons.collections.CollectionUtils;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.rocketmq.client.consumer.DefaultMQPullConsumer;
 import org.apache.rocketmq.client.producer.DefaultMQProducer;
+import org.apache.rocketmq.common.UtilAll;
 import org.apache.rocketmq.connect.runtime.common.ConnectKeyValue;
 import org.apache.rocketmq.connect.runtime.common.LoggerName;
 import org.apache.rocketmq.connect.runtime.config.ConnectConfig;
@@ -340,7 +341,6 @@ public class Worker {
             }
             if (task instanceof SourceTask) {
                 DefaultMQProducer producer = ConnectUtil.initDefaultMQProducer(connectConfig);
-
                 //必须保证提交到线程池之前，这里的类加载动作就全部完成。否线程池的类加载器是appClassLoader
                 WorkerSourceTask workerSourceTask = new WorkerSourceTask(connectorName,(SourceTask) task, keyValue, positionManagementService, recordConverter, producer, workerState,isolationFlag?loader:currentThreadLoader);
                 Plugin.compareAndSwapLoaders(currentThreadLoader);

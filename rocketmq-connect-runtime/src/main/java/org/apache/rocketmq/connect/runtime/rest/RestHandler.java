@@ -19,12 +19,28 @@ package org.apache.rocketmq.connect.runtime.rest;
 
 import com.alibaba.fastjson.JSON;
 import com.alibaba.fastjson.serializer.SerializerFeature;
+import com.google.common.collect.MapMaker;
+import com.google.common.collect.Maps;
 import io.javalin.Context;
 import io.javalin.Javalin;
 
+import java.io.IOException;
+import java.io.InputStream;
 import java.util.*;
+import java.util.function.BiFunction;
 
+import org.apache.commons.collections4.MapUtils;
 import org.apache.commons.lang3.StringUtils;
+import org.apache.http.HttpEntity;
+import org.apache.http.client.methods.CloseableHttpResponse;
+import org.apache.http.client.methods.HttpGet;
+import org.apache.http.client.methods.HttpUriRequest;
+import org.apache.http.client.utils.HttpClientUtils;
+import org.apache.http.impl.client.CloseableHttpClient;
+import org.apache.http.impl.client.HttpClients;
+import org.apache.http.util.EntityUtils;
+import org.apache.rocketmq.common.protocol.body.Connection;
+import org.apache.rocketmq.common.protocol.body.ConsumerConnection;
 import org.apache.rocketmq.connect.runtime.ConnectController;
 import org.apache.rocketmq.connect.runtime.common.ConnectKeyValue;
 import org.apache.rocketmq.connect.runtime.common.LoggerName;
@@ -40,6 +56,7 @@ import org.slf4j.LoggerFactory;
 public class RestHandler {
 
     private static final Logger log = LoggerFactory.getLogger(LoggerName.ROCKETMQ_RUNTIME);
+    public static final String GET_ALLOCATED_TASK = "/getAllocatedTask";
 
     private final ConnectController connectController;
 
@@ -47,12 +64,19 @@ public class RestHandler {
 
     private static final String TASK_CONFIGS = "taskConfigs";
 
+    final CloseableHttpClient httpClient;
+
+    public CloseableHttpClient getHttpClient() {
+        return httpClient;
+    }
+
     public RestHandler(ConnectController connectController) {
         this.connectController = connectController;
         Javalin app = Javalin.create();
         app.enableCaseSensitiveUrls();
         app = app.start(connectController.getConnectConfig().getHttpPort());
 
+        httpClient = HttpClients.createDefault();
 
         //查看全部connector info以及对应的task info
         app.get("/getConnectorTask", this::getConnectorTask);
@@ -70,7 +94,9 @@ public class RestHandler {
         //查看集群信息
         app.get("/getClusterInfo", this::getClusterInfo);
         //查看分配给自己的任务的状态
-        app.get("/getAllocatedTask", this::getAllocatedTask);
+        app.get(GET_ALLOCATED_TASK, this::getAllocatedTask);
+        //查看所有task的状态，内部会调用其他节点的getAllocatedTask
+        app.get("/getAllTask/:byWorker", this::getAllTask);
         //插件重新加载
         app.get("/plugin/reload", this::reloadPlugins);
 
@@ -94,6 +120,69 @@ public class RestHandler {
         //删除
         app.get("/connectors/single/:connectorName/remove", this::handleRemoveConnector);
 
+    }
+
+    private void getAllTask(Context context) {
+        boolean byWorker = Boolean.parseBoolean(context.pathParam("byWorker"));
+
+        final ConsumerConnection consumerConnection = connectController.getClusterManagementService().fetchConsumerConnection();
+        Map map = new HashMap<>();
+        for (Connection connection : consumerConnection.getConnectionSet()) {
+            final String clientId = connection.getClientId();
+            final String[] split = clientId.split("@");
+            String restPort = null;
+
+            String clientAddr = connection.getClientAddr();
+            clientAddr = clientAddr.split(":")[0];
+
+            if (split.length>1) {
+                final String pidAndPort = split[1];
+                if (pidAndPort!=null) {
+                    final String[] strings = pidAndPort.split("#");
+                    if (strings.length>1) {
+                        restPort = strings[1];
+                    }
+                }
+            }
+            if (restPort == null || clientAddr == null) {
+                log.error("consumerID format is wrong and will ignore this consumer");
+                continue;
+            }
+
+            HttpUriRequest httpUriRequest  = new HttpGet("http://"+clientAddr+":"+restPort+GET_ALLOCATED_TASK);
+            CloseableHttpResponse execute = null;
+            try {
+                execute = httpClient.execute(httpUriRequest);
+                final HttpEntity entity = execute.getEntity();
+                final String rs = EntityUtils.toString(entity, "UTF-8");
+                final HashMap rsMap = JSON.parseObject(rs, HashMap.class);
+                if (byWorker) {
+                    map.put(connection.getClientId(),rsMap);
+                }else{
+                    for (Object key : rsMap.keySet()) {
+                        map.merge(key, rsMap.get(key), (oldV, newV) -> {
+                            final boolean all = ((Collection) oldV).addAll(((Collection) newV));
+                            return oldV;
+                        });
+                    }
+                }
+            }catch (IOException e) {
+                log.error("",e);
+                context.result("failed");
+                return;
+            }finally {
+                if (execute!=null) {
+                    try {
+                        execute.close();
+                    } catch (IOException e) {
+                        e.printStackTrace();
+                    }
+                }
+            }
+        }
+
+        context.result(JSON.toJSONString(map, SerializerFeature.PrettyFormat));
+        return;
     }
 
     private void handleLogMsg(Context context) {

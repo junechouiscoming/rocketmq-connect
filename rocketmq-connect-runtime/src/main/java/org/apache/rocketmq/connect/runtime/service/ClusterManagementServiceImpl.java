@@ -23,13 +23,19 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 import org.apache.rocketmq.client.consumer.DefaultMQPullConsumer;
+import org.apache.rocketmq.client.exception.MQBrokerException;
 import org.apache.rocketmq.client.exception.MQClientException;
+import org.apache.rocketmq.common.UtilAll;
 import org.apache.rocketmq.common.protocol.RequestCode;
+import org.apache.rocketmq.common.protocol.body.ConsumerConnection;
 import org.apache.rocketmq.common.protocol.header.NotifyConsumerIdsChangedRequestHeader;
 import org.apache.rocketmq.connect.runtime.common.LoggerName;
 import org.apache.rocketmq.connect.runtime.config.ConnectConfig;
 import org.apache.rocketmq.connect.runtime.utils.ConnectUtil;
 import org.apache.rocketmq.remoting.common.RemotingHelper;
+import org.apache.rocketmq.remoting.exception.RemotingConnectException;
+import org.apache.rocketmq.remoting.exception.RemotingSendRequestException;
+import org.apache.rocketmq.remoting.exception.RemotingTimeoutException;
 import org.apache.rocketmq.remoting.netty.NettyRequestProcessor;
 import org.apache.rocketmq.remoting.protocol.RemotingCommand;
 import org.slf4j.Logger;
@@ -51,6 +57,7 @@ public class ClusterManagementServiceImpl implements ClusterManagementService {
      */
     private DefaultMQPullConsumer defaultMQPullConsumer;
 
+
     /**
      * 设置自己的消费组名称默认为 DefaultConnectCluster
      * @param connectConfig
@@ -60,6 +67,8 @@ public class ClusterManagementServiceImpl implements ClusterManagementService {
         this.workerStatusListeners = new HashSet<>();
         this.defaultMQPullConsumer = ConnectUtil.initDefaultMQPullConsumer(connectConfig);
         this.defaultMQPullConsumer.setConsumerGroup(connectConfig.getConnectClusterId());
+        //把HTTP端口暴露出去,这个地方的instance会影响负载均衡的结果,所以负载均衡那边
+        defaultMQPullConsumer.setInstanceName(String.format("%s#%s#%s",UtilAll.getPid(),connectConfig.getHttpPort(),connectConfig.getWorkerId()));
         this.prepare(connectConfig);
     }
 
@@ -101,7 +110,7 @@ public class ClusterManagementServiceImpl implements ClusterManagementService {
     }
 
     @Override
-    public boolean hasClusterStoreTopic() {
+    public synchronized boolean hasClusterStoreTopic() {
         return this.defaultMQPullConsumer.getDefaultMQPullConsumerImpl()
             .getRebalanceImpl()
             .getmQClientFactory()
@@ -113,7 +122,7 @@ public class ClusterManagementServiceImpl implements ClusterManagementService {
      * @return
      */
     @Override
-    public List<String> getAllAliveWorkers() {
+    public synchronized List<String> getAllAliveWorkers() {
         return this.defaultMQPullConsumer.getDefaultMQPullConsumerImpl()
             .getRebalanceImpl()
             .getmQClientFactory()
@@ -121,7 +130,7 @@ public class ClusterManagementServiceImpl implements ClusterManagementService {
     }
 
     @Override
-    public String getCurrentWorker() {
+    public synchronized String getCurrentWorker() {
         return this.defaultMQPullConsumer.getDefaultMQPullConsumerImpl().getRebalanceImpl().getmQClientFactory().getClientId();
     }
 
@@ -151,6 +160,7 @@ public class ClusterManagementServiceImpl implements ClusterManagementService {
                 log.info("Receive broker's notification[{}], the consumer group for connect: {} changed,  rebalance immediately",
                     RemotingHelper.parseChannelRemoteAddr(ctx.channel()),
                     requestHeader.getConsumerGroup());
+
                 for (WorkerStatusListener workerChangeListener : workerStatusListeners) {
                     workerChangeListener.onWorkerChange();
                 }
@@ -163,5 +173,23 @@ public class ClusterManagementServiceImpl implements ClusterManagementService {
         @Override public boolean rejectRequest() {
             return false;
         }
+    }
+
+    public synchronized ConsumerConnection fetchConsumerConnection(){
+        String brokerAddr = defaultMQPullConsumer.getDefaultMQPullConsumerImpl().getRebalanceImpl().getmQClientFactory().findBrokerAddrByTopic(connectConfig.getClusterStoreTopic());
+        if (null == brokerAddr) {
+            defaultMQPullConsumer.getDefaultMQPullConsumerImpl().getRebalanceImpl().getmQClientFactory().updateTopicRouteInfoFromNameServer(connectConfig.getClusterStoreTopic());
+            brokerAddr = defaultMQPullConsumer.getDefaultMQPullConsumerImpl().getRebalanceImpl().getmQClientFactory().findBrokerAddrByTopic(connectConfig.getClusterStoreTopic());
+        }
+        if (brokerAddr!=null) {
+            final ConsumerConnection list;
+            try {
+                list = defaultMQPullConsumer.getDefaultMQPullConsumerImpl().getRebalanceImpl().getmQClientFactory().getMQClientAPIImpl().getConsumerConnectionList(brokerAddr, connectConfig.getConnectClusterId(), 3000);
+            } catch (Exception e) {
+                throw new RuntimeException(e);
+            }
+            return list;
+        }
+        throw new RuntimeException("can`t find any broker address");
     }
 }
