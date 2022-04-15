@@ -40,7 +40,7 @@ import org.slf4j.LoggerFactory;
  */
 public class RebalanceImpl {
 
-    private static final Logger log = LoggerFactory.getLogger(LoggerName.ROCKETMQ_RUNTIME);
+    private static final Logger log = LoggerFactory.getLogger(LoggerName.ROCKETMQ_REBALANCE);
 
     /**
      * Worker to schedule connectors and tasks in current process.
@@ -131,9 +131,13 @@ public class RebalanceImpl {
             Map<String, Map> printMap = new HashMap<>();
             printMap.put("Remove", inRemove);
             printMap.put("Add", inAdd);
-            log.info("now allocated tasks:\n"+ JSON.toJSONString(allocateResult.getTaskConfigs(),SerializerFeature.PrettyFormat));
 
-            log.info("after rebalanced ,in this worker the allocated tasks changes :\n"+ JSON.toJSONString(printMap,SerializerFeature.PrettyFormat));
+            log.info("now allocated tasks:\n"+ JSON.toJSONString(allocateResult.getTaskConfigs(),SerializerFeature.PrettyFormat));
+            if (inRemove.size()==0 && inAdd.size()==0) {
+                log.info("after rebalanced ,in this worker the allocated tasks have no changes");
+            }else{
+                log.info("after rebalanced ,in this worker the allocated tasks changes :\n"+ JSON.toJSONString(printMap,SerializerFeature.PrettyFormat));
+            }
             worker.setTasks(allocateResult.getTaskConfigs());
         } catch (Exception e) {
             log.error("RebalanceImpl#updateProcessConfigsInRebalance start connector or task failed", e);

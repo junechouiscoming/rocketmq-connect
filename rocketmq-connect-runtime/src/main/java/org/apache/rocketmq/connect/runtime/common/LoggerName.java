@@ -22,4 +22,5 @@ package org.apache.rocketmq.connect.runtime.common;
  */
 public class LoggerName {
     public static final String ROCKETMQ_RUNTIME = "RocketMQRuntime";
+    public static final String ROCKETMQ_REBALANCE = "RocketMQRebalance";
 }
