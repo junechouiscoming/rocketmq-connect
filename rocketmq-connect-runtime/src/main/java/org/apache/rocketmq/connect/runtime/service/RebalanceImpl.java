@@ -40,7 +40,7 @@ import org.slf4j.LoggerFactory;
  */
 public class RebalanceImpl {
 
-    private static final Logger log = LoggerFactory.getLogger(LoggerName.ROCKETMQ_REBALANCE);
+    private static final Logger log = LoggerFactory.getLogger(LoggerName.ROCKETMQ_RUNTIME);
 
     /**
      * Worker to schedule connectors and tasks in current process.
