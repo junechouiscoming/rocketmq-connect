@@ -30,7 +30,7 @@ public class RuntimeConfigDefine {
     /**
      * 逐条log打印转发的消息
      */
-    public static final String LOG_MSG_DETAILS = "logMsgDetails";
+    public static final String LOG_MSG_DETAILS = "logMsgDetail";
 
     /**
      * The full class name of a specific connector implements.

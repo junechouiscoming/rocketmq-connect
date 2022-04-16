@@ -362,7 +362,7 @@ public class RestHandler {
                 try{
                     connectController.getConfigManagementService().enableConnectorConfig(connector);
                 }catch (Exception ex){
-                    msg.append("failed:"+ex.getMessage()).append("\n");
+                    msg.append(String.format("failed %s:",connector)+ex.getMessage()).append("\n");
                 }
             }
             context.result(msg.toString());
@@ -380,7 +380,7 @@ public class RestHandler {
                 try{
                     connectController.getConfigManagementService().disableConnectorConfig(connector);
                 }catch (Exception ex){
-                    msg.append("failed:"+ex.getMessage()).append("\n");
+                    msg.append(String.format("failed %s:",connector)+ex.getMessage()).append("\n");
                 }
             }
             context.result(msg.toString());
@@ -398,7 +398,7 @@ public class RestHandler {
                 try{
                     connectController.getConfigManagementService().removeConnectorConfig(connector);
                 }catch (Exception ex){
-                    msg.append("failed:"+ex.getMessage()).append("\n");
+                    msg.append(String.format("failed %s:",connector)+ex.getMessage()).append("\n");
                 }
             }
             context.result(msg.toString());
@@ -413,7 +413,12 @@ public class RestHandler {
     private void handleEnableConnector(Context context) {
         try {
             String connectorName = context.pathParam("connectorName");
-            connectController.getConfigManagementService().enableConnectorConfig(connectorName);
+            try{
+                connectController.getConfigManagementService().enableConnectorConfig(connectorName);
+                context.result("success");
+            }catch (Exception ex){
+                context.result("failed:"+ex.getMessage());
+            }
         }catch (Exception e) {
             log.error("", e);
             context.result("failed:"+e.getMessage());

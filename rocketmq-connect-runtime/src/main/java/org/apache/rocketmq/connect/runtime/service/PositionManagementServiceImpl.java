@@ -69,7 +69,7 @@ public class PositionManagementServiceImpl implements PositionManagementService 
      */
     private Set<PositionUpdateListener> positionUpdateListener;
 
-    private final String positionManagePrefix = "PositionManage";
+    private final String positionManagePrefix = "connector-positionManage";
 
     public PositionManagementServiceImpl(ConnectConfig connectConfig) {
         this.positionStore = new FileBaseKeyValueStore<ByteBuffer,ByteBuffer>(

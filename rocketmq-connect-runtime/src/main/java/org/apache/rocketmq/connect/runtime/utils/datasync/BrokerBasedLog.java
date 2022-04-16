@@ -18,29 +18,28 @@
 package org.apache.rocketmq.connect.runtime.utils.datasync;
 
 import com.alibaba.fastjson.JSON;
+import com.alibaba.fastjson.serializer.SerializerFeature;
 import io.openmessaging.connector.api.data.Converter;
-import java.util.Base64;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
+
+import java.nio.charset.StandardCharsets;
+import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
-import org.apache.rocketmq.client.consumer.DefaultMQPushConsumer;
+import org.apache.rocketmq.client.consumer.*;
 import org.apache.rocketmq.client.consumer.listener.ConsumeConcurrentlyContext;
 import org.apache.rocketmq.client.consumer.listener.ConsumeConcurrentlyStatus;
 import org.apache.rocketmq.client.consumer.listener.MessageListenerConcurrently;
-import org.apache.rocketmq.client.exception.MQBrokerException;
 import org.apache.rocketmq.client.exception.MQClientException;
 import org.apache.rocketmq.client.producer.DefaultMQProducer;
 import org.apache.rocketmq.client.producer.SendCallback;
-import org.apache.rocketmq.client.producer.SendResult;
 import org.apache.rocketmq.common.message.Message;
 import org.apache.rocketmq.common.message.MessageExt;
+import org.apache.rocketmq.common.message.MessageQueue;
 import org.apache.rocketmq.connect.runtime.common.LoggerName;
 import org.apache.rocketmq.connect.runtime.config.ConnectConfig;
 import org.apache.rocketmq.connect.runtime.utils.ConnectUtil;
-import org.apache.rocketmq.remoting.exception.RemotingException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -55,6 +54,8 @@ import static org.apache.rocketmq.connect.runtime.config.RuntimeConfigDefine.MAX
 public class BrokerBasedLog<K, V> implements DataSynchronizer<K, V> {
 
     private static final Logger log = LoggerFactory.getLogger(LoggerName.ROCKETMQ_RUNTIME);
+    public static final String WORKER_ID = "workerId";
+    public static final String VALUE = "value";
 
     /**
      * A callback to receive data from other workers.
@@ -69,7 +70,7 @@ public class BrokerBasedLog<K, V> implements DataSynchronizer<K, V> {
     /**
      * Consumer to receive synchronize data from broker.
      */
-    private DefaultMQPushConsumer consumer;
+    private DefaultMQPullConsumer consumer;
 
     /**
      * A queue to send or consume message.
@@ -88,21 +89,25 @@ public class BrokerBasedLog<K, V> implements DataSynchronizer<K, V> {
 
     private ExecutorService executors = Executors.newSingleThreadExecutor();
 
+    private Map<MessageQueue, Long> messageQueues = new ConcurrentHashMap<>();
+    private String workerId;
+    private Map<MessageQueue, Long> suspendQueues = new ConcurrentHashMap<>();
     public BrokerBasedLog(ConnectConfig connectConfig,
-        String topicName,
-        String workId,
-        DataSynchronizerCallback<K, V> dataSynchronizerCallback,
-        Converter keyConverter,
-        Converter valueConverter) {
+                          String topicName,
+                          String workId,
+                          DataSynchronizerCallback<K, V> dataSynchronizerCallback,
+                          Converter keyConverter,
+                          Converter valueConverter) {
 
         this.topicName = topicName;
         this.dataSynchronizerCallback = dataSynchronizerCallback;
         this.producer = ConnectUtil.initDefaultMQProducer(connectConfig);
         this.producer.setProducerGroup(workId);
-        this.consumer = ConnectUtil.initDefaultMQPushConsumer(connectConfig);
+        this.consumer = ConnectUtil.initDefaultMQPullConsumer(connectConfig);
         this.consumer.setConsumerGroup(workId);
         this.keyConverter = keyConverter;
         this.valueConverter = valueConverter;
+        this.workerId = connectConfig.getWorkerId();
         this.prepare(connectConfig);
     }
 
@@ -122,9 +127,72 @@ public class BrokerBasedLog<K, V> implements DataSynchronizer<K, V> {
     public void start() {
         try {
             producer.start();
-            consumer.subscribe(topicName, "*");
-            consumer.registerMessageListener(new MessageListenerImpl());
+            consumer.registerMessageQueueListener(topicName, new MessageQueueListener() {
+                @Override
+                public void messageQueueChanged(String topic, Set<MessageQueue> mqAll, Set<MessageQueue> mqDivided) {
+                    synchronized (messageQueues){
+                        messageQueues.clear();
+                        if (mqDivided!=null) {
+                            mqDivided.stream().forEach(q->{
+                                try{
+                                    messageQueues.put(q,consumer.maxOffset(q));
+                                }catch (MQClientException ex){
+                                    log.error("",ex);
+                                }
+                            });
+                        }
+                    }
+                }
+            });
             consumer.start();
+            final MessageListenerImpl messageListener = new MessageListenerImpl();
+            new Thread(new Runnable() {
+                @Override
+                public void run() {
+                    while (true){
+                        boolean hasMessage = false;
+                        synchronized (messageQueues){
+                            for (MessageQueue queue : messageQueues.keySet()) {
+                                final Long offSet = messageQueues.get(queue);
+                                if (offSet!=null) {
+                                    final Long nextPulltime = suspendQueues.get(queue);
+                                    if (nextPulltime!=null && System.currentTimeMillis() < nextPulltime) {
+                                        continue;
+                                    }
+                                    try {
+                                        final PullResult pullResult = consumer.pull(queue,"",offSet,32);
+                                        final List<MessageExt> msgFoundList = pullResult.getMsgFoundList();
+                                        if (msgFoundList!=null && pullResult.getPullStatus()==PullStatus.FOUND && msgFoundList.size()>0) {
+                                            //只要有1个queue拉取到了消息，接下来会立刻拉第二次。否则的话就等2秒
+                                            hasMessage = true;
+                                            try{
+                                                messageListener.consumeMessage(msgFoundList,null);
+                                            }catch (Exception ex){
+                                                log.error("consume broker based log failed :"+msgFoundList,ex);
+                                            }finally {
+                                                messageQueues.computeIfPresent(queue, (messageQueue, aLong) -> pullResult.getNextBeginOffset());
+                                            }
+                                        }else{
+                                            suspendQueues.put(queue, System.currentTimeMillis() + 2000);
+                                        }
+                                    } catch (Exception e) {
+                                        log.error("pull broker based log failed",e);
+                                    }
+                                }
+                            }
+                        }
+                        try {
+                            if (!hasMessage) {
+                                Thread.sleep(2000);
+                            }
+                            hasMessage = false;
+                        } catch (InterruptedException e) {
+                            e.printStackTrace();
+                        }
+                    }
+                }
+            }).start();
+
         } catch (MQClientException e) {
             log.error("Start error.", e);
         }
@@ -145,9 +213,14 @@ public class BrokerBasedLog<K, V> implements DataSynchronizer<K, V> {
                 log.error("Message size is greater than {} bytes, key: {}, value {}", MAX_MESSAGE_SIZE, key, value);
                 return;
             }
-            producer.send(new Message(topicName, messageBody), new SendCallback() {
+
+            Map<String,Object> sendMap = new HashMap<>();
+            sendMap.put(VALUE, messageBody);
+            sendMap.put(WORKER_ID, workerId);
+
+            producer.send(new Message(topicName, JSON.toJSONString(sendMap, SerializerFeature.WriteClassName).getBytes(StandardCharsets.UTF_8)), new SendCallback() {
                 @Override public void onSuccess(org.apache.rocketmq.client.producer.SendResult result) {
-                    log.debug("Send SYS async message OK, msgId: {},topic:{}", result.getMsgId(), topicName);
+                    log.info("Send SYS async message OK, msgId: {}  topic:{}", result.getMsgId(), topicName);
                 }
 
                 @Override public void onException(Throwable throwable) {
@@ -200,11 +273,17 @@ public class BrokerBasedLog<K, V> implements DataSynchronizer<K, V> {
         public ConsumeConcurrentlyStatus consumeMessage(List<MessageExt> rmqMsgList,
             ConsumeConcurrentlyContext context) {
             for (MessageExt messageExt : rmqMsgList) {
-                log.debug("Received one message: {}, topic is {}", messageExt.getMsgId(), topicName);
                 byte[] bytes = messageExt.getBody();
                 Map<K, V> map;
                 try {
-                    map = decodeKeyValue(bytes);
+                    final HashMap<String,Object> parseMap = JSON.parseObject(bytes, HashMap.class);
+                    final String workerId = (String) parseMap.get(WORKER_ID);
+                    if (workerId.equals(BrokerBasedLog.this.workerId)) {
+                        //收到了自己发出的消息
+                        continue;
+                    }
+                    log.info("Received one message from {} ,msgId: {}, topic is {}",workerId, messageExt.getMsgId(), topicName);
+                    map = decodeKeyValue((byte[]) parseMap.get(VALUE));
                 } catch (Exception e) {
                     log.error("Decode message data error. message: {}, error info: {}", messageExt, e);
                     return ConsumeConcurrentlyStatus.RECONSUME_LATER;

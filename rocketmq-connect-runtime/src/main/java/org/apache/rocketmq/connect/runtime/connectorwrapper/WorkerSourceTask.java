@@ -19,6 +19,7 @@ package org.apache.rocketmq.connect.runtime.connectorwrapper;
 
 import com.alibaba.fastjson.JSON;
 import com.alibaba.fastjson.serializer.SerializerFeature;
+import com.google.common.primitives.Longs;
 import io.openmessaging.KeyValue;
 import io.openmessaging.connector.api.PositionStorageReader;
 import io.openmessaging.connector.api.data.Converter;
@@ -29,16 +30,14 @@ import io.openmessaging.connector.api.source.SourceTaskContext;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.TimeUnit;
+import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicReference;
 
-import org.apache.rocketmq.client.producer.DefaultMQProducer;
-import org.apache.rocketmq.client.producer.MessageQueueSelector;
-import org.apache.rocketmq.client.producer.SendCallback;
-import org.apache.rocketmq.client.producer.SendResult;
+import org.apache.rocketmq.client.exception.MQClientException;
+import org.apache.rocketmq.client.producer.*;
 import org.apache.rocketmq.common.message.Message;
 import org.apache.rocketmq.common.message.MessageQueue;
+import org.apache.rocketmq.common.queue.ConcurrentTreeMap;
 import org.apache.rocketmq.connect.runtime.ConnectController;
 import org.apache.rocketmq.connect.runtime.common.ConnectKeyValue;
 import org.apache.rocketmq.connect.runtime.common.LoggerName;
@@ -56,6 +55,7 @@ import org.slf4j.LoggerFactory;
 public class WorkerSourceTask implements WorkerTask {
 
     private static final Logger log = LoggerFactory.getLogger(LoggerName.ROCKETMQ_RUNTIME);
+    private static Logger logger4SourceMsg = LoggerFactory.getLogger("logger4SourceMsg");
 
     /**
      * Connector name of current task.
@@ -220,87 +220,146 @@ public class WorkerSourceTask implements WorkerTask {
     private void sendRecord(Collection<SourceDataEntry> sourceDataEntries) {
         SendCallback sendCallback;
 
+        final Map<String/*topic*/, ConcurrentSkipListMap<Long/*position*/,String/*msgId*/>> callBackOffsetTreeMap = new ConcurrentHashMap<>(10);
+        Map<String/*topic*/, TreeSet<Long/*position*/>> sendOffsetTeeSet = new HashMap<>(callBackOffsetTreeMap.size());
+
+        boolean successAll = true;
         CountDownLatch countDownLatch = new CountDownLatch(sourceDataEntries.size());
 
         for (SourceDataEntry sourceDataEntry : sourceDataEntries) {
-            //这个partition在kafka connect中 = record.topic() + "-" + record.partition()
-            ByteBuffer partition = sourceDataEntry.getSourcePartition();
-            //position在kafka connect中 = record.offset()
-            ByteBuffer position = sourceDataEntry.getSourcePosition();
-            sourceDataEntry.setSourcePartition(null);
-            sourceDataEntry.setSourcePosition(null);
-            Message sourceMessage = new Message();
-            //mz 这里的queueName其实是topic名称
-            sourceMessage.setTopic(sourceDataEntry.getQueueName());
-
-            byte[] key = (byte[])sourceDataEntry.getPayload()[0];
-            byte[] value = (byte[])sourceDataEntry.getPayload()[1];
-            Map<String,byte[]> header = (Map<String,byte[]>)sourceDataEntry.getPayload()[2];
-
-            if (key!=null && key.length>0) {
-                sourceMessage.setKeys(new String(key));
-            }
-            sourceMessage.putUserProperty("by_connector","true");
-            sourceMessage.setBody(value.length==0?"default empty body for no exception to send".getBytes(StandardCharsets.UTF_8):value);
-            //header
-            if (header!=null) {
-                List<String> hLst = new ArrayList<>();
-                for (Map.Entry<String, byte[]> entry : header.entrySet()) {
-                    hLst.add(entry.getKey());
-                    sourceMessage.putUserProperty(entry.getKey(),new String(entry.getValue()));
-                }
-            }
-
-            //拉取消息时候指定位移
-            sendCallback = new SendCallback() {
-                @Override
-                public void onSuccess(SendResult result) {
-                    countDownLatch.countDown();
-                    if (null != partition && null != position) {
-                        //对于kafka-connect这里partition就是topic+分区号,position就是record的offset
-                        //如果这里发送成功，但是callback因为宕机等没能执行，那么这条消息的位移无法提交，也就是positionManagementService无法提交，
-                        // 那么下次拉取消息已更改还是会从上个位置拉取poll，那么就会造成消息再次投递到rocketMQ导致重复了
-                        positionManagementService.putPosition(partition, position);
-                    }
-                    if (ConnectConfig.isLogMsgDetail()) {
-                        log.info("Successful send message to RocketMQ: kafka offset:{},rocketMQ msgID:{}",new String(partition.array())+":"+new String(position.array()), result.getMsgId());
-                    }
-                }
-
-                @Override
-                public void onException(Throwable throwable) {
-                    if (null != throwable) {
-                        log.error(String.format("send msg to rocketMQ failed on sendCallBack. %s",sourceMessage), throwable);
-                    }
-                }
-            };
             try {
-                //需要设置messageQueueSelector 如果kafka的key不null的话,这样从kafka拉下来就都能send到同一个rocketMQ的queue里了
-                if (sourceMessage.getKeys()!=null && sourceMessage.getKeys().length()>0) {
-                    producerToRocketMQ.send(sourceMessage, new MessageQueueSelector() {
-                        @Override
-                        public MessageQueue select(List<MessageQueue> mqs, Message msg, Object arg) {
-                            int i = toPositive(murmur2(sourceMessage.getKeys().getBytes(StandardCharsets.UTF_8))) % mqs.size();
-                            return mqs.get(i);
-                        }
-                    },sendCallback);
-                }else{
-                    producerToRocketMQ.send(sourceMessage,sendCallback);
+                //这个partition在kafka connect中 = record.topic() + "-" + record.partition()
+                final ByteBuffer partition = sourceDataEntry.getSourcePartition();
+                //position在kafka connect中 = record.offset()
+                final ByteBuffer position = sourceDataEntry.getSourcePosition();
+                sourceDataEntry.setSourcePartition(null);
+                sourceDataEntry.setSourcePosition(null);
+                Message sourceMessage = new Message();
+                //mz 这里的queueName其实是topic名称
+                sourceMessage.setTopic(sourceDataEntry.getQueueName());
+
+                byte[] key = (byte[])sourceDataEntry.getPayload()[0];
+                byte[] value = (byte[])sourceDataEntry.getPayload()[1];
+                Map<String,byte[]> header = (Map<String,byte[]>)sourceDataEntry.getPayload()[2];
+
+                if (key!=null && key.length>0) {
+                    sourceMessage.setKeys(new String(key));
                 }
-            } catch (Exception e) {
-                log.error("Send message to rocketMQ error. message: {}", sourceMessage, e);
-                throw new RuntimeException(e);
+                sourceMessage.putUserProperty("by_connector","true");
+                sourceMessage.setBody(value.length==0?"default empty body for no exception to send".getBytes(StandardCharsets.UTF_8):value);
+                //header
+                if (header!=null) {
+                    List<String> hLst = new ArrayList<>();
+                    for (Map.Entry<String, byte[]> entry : header.entrySet()) {
+                        hLst.add(entry.getKey());
+                        sourceMessage.putUserProperty(entry.getKey(),new String(entry.getValue()));
+                    }
+                }
+                final String partitionStr = new String(partition.array());
+                callBackOffsetTreeMap.putIfAbsent(partitionStr, new ConcurrentSkipListMap<>());
+
+                sendOffsetTeeSet.putIfAbsent(partitionStr, new TreeSet<>());
+
+                final String positionStr = new String(position.array());
+                TreeSet<Long> treeSet = sendOffsetTeeSet.get(partitionStr);
+                treeSet.add(Long.parseLong(positionStr));
+
+                //拉取消息时候指定位移
+                sendCallback = new SendCallback() {
+                    @Override
+                    public void onSuccess(SendResult result) {
+                        try {
+                            if (result.getSendStatus() != SendStatus.SEND_OK) {
+                                log.warn("not store ok send message to RocketMQ: kafka offset:{},rocketMQ msg:{}", partitionStr +":"+ positionStr,sourceMessage);
+                                return;
+                            }
+
+                            final ConcurrentSkipListMap<Long, String> skipListMap = callBackOffsetTreeMap.get(partitionStr);
+                            if (skipListMap==null) {
+                                log.warn("ignore offset cuz timeOut");
+                                //如果发现它没了,则一定是countLatch超时了被清理掉了,那么不需要提交位移
+                                return;
+                            }
+                            //比如从P1分区拉下来5条消息，其中序号5的消息最先回来，那么这里位移就会被序号1的盖掉,所以序号1没放进去之前,序号5不准放进去，利用treeMap
+                            skipListMap.put(Long.parseLong(positionStr), result.getMsgId());
+                        }finally {
+                            countDownLatch.countDown();
+                        }
+                    }
+
+                    @Override
+                    public void onException(Throwable throwable) {
+                        countDownLatch.countDown();
+                        if (null != throwable) {
+                            log.warn("failed send message to RocketMQ: kafka offset:{},rocketMQ msg:{}", partitionStr +":"+ positionStr,sourceMessage);
+                        }
+                    }
+                };
+                try {
+                    //需要设置messageQueueSelector 如果kafka的key不null的话,这样从kafka拉下来就都能send到同一个rocketMQ的queue里了
+                    if (sourceMessage.getKeys()!=null && sourceMessage.getKeys().length()>0) {
+                        //带key的消息一定要保证顺序性
+                        final SendResult sendResult = producerToRocketMQ.send(sourceMessage, new MessageQueueSelector() {
+                            @Override
+                            public MessageQueue select(List<MessageQueue> mqs, Message msg, Object arg) {
+                                int i = toPositive(murmur2(sourceMessage.getKeys().getBytes(StandardCharsets.UTF_8))) % mqs.size();
+                                return mqs.get(i);
+                            }
+                        }, null);
+                        sendCallback.onSuccess(sendResult);
+                    }else{
+                        producerToRocketMQ.send(sourceMessage,sendCallback);
+                    }
+                } catch (Exception e) {
+                    throw new MQClientException("Send message to rocketMQ error. message: {}",e);
+                }
+            }catch (Exception ex){
+                //任何一条有失败,break掉继续重新拉,但尝试提交一次位移
+                successAll = false;
+                log.warn(ex.getMessage(),ex);
+                break;
             }
         }
 
         try {
-            final boolean await = countDownLatch.await(10 * 1000, TimeUnit.MILLISECONDS);
-            if (!await) {
-                //timeout
-                throw new RuntimeException("countDownLatch time out...");
+            if (successAll) {
+                //全部成功才要wait一会儿
+                countDownLatch.await(10 * 60 * 1000, TimeUnit.MILLISECONDS);
+            }else{
+                //如果没有全部成功,直接尝试提交位移然后开始下一次重新消费
             }
         } catch (InterruptedException e) {
-            throw new RuntimeException("countDownLatch interrupt",e);
+            log.warn("",e);
+        }finally {
+            //尝试提交位移,能提交多少算多少
+            for (Map.Entry<String, TreeSet<Long>> entry : sendOffsetTeeSet.entrySet()) {
+                final String partitionStr = entry.getKey();
+                final TreeSet<Long> sendOffSet = entry.getValue();
+                final ConcurrentSkipListMap<Long, String> callBackSkipMap = callBackOffsetTreeMap.get(partitionStr);
+                //总共发出去的消息,减去已收到的,结果就是未回来的消息,找最后一个回来的消息提交它的位移即可
+                Long lastOffset = null;
+                //1 2 3
+                //1 2
+                for (Long offset : sendOffSet) {
+                    final String msgId = callBackSkipMap.get(offset);
+                    if (msgId!=null) {
+                        lastOffset = offset;
+                        if (ConnectConfig.isLogMsgDetail()) {
+                            logger4SourceMsg.info("Successful send message to RocketMQ: kafka offset:{},rocketMQ msgID:{}", partitionStr +":"+offset,msgId);
+                        }
+                    }else{
+                        logger4SourceMsg.error(String.format("some msg call back not enter %s:%s",partitionStr,offset));
+                        //没回来,直接就可以更新位移了
+                        break;
+                    }
+                }
+                if (lastOffset!=null) {
+                    logger4SourceMsg.info(String.format("positionManagementService putPosition %s:%s",partitionStr,lastOffset));
+                    positionManagementService.putPosition(ByteBuffer.wrap(partitionStr.getBytes(StandardCharsets.UTF_8)),ByteBuffer.wrap(String.valueOf(lastOffset).getBytes(StandardCharsets.UTF_8)));
+                }
+            }
+            sendOffsetTeeSet = null;
+            callBackOffsetTreeMap.clear();
         }
     }
 

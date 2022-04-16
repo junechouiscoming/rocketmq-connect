@@ -65,7 +65,7 @@ public class OffsetManagementServiceImpl implements PositionManagementService {
      */
     private DataSynchronizer<String, Map<ByteBuffer, ByteBuffer>> dataSynchronizer;
 
-    private final String offsetManagePrefix = "OffsetManage";
+    private final String offsetManagePrefix = "connector-offsetManage";
 
     /**
      * Listeners.

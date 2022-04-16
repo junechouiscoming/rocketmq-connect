@@ -27,7 +27,7 @@ import java.io.File;
  */
 public class ConnectConfig {
 
-    private static volatile boolean logMsgDetail = Boolean.parseBoolean(System.getProperty(RuntimeConfigDefine.LOG_MSG_DETAILS, "false"));
+    private static volatile boolean logMsgDetail = false;
 
     /**
      * The unique ID of each worker instance in the cluster

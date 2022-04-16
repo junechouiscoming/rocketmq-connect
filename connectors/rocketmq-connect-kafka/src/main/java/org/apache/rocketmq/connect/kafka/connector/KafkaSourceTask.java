@@ -47,8 +47,9 @@ import java.util.concurrent.CopyOnWriteArraySet;
 public class KafkaSourceTask extends SourceTask {
 
     private static DefaultThreadFactory defaultThreadFactory = new DefaultThreadFactory("kafkaOffsetCommit-");
+    private static Logger logger4SourceMsg = LoggerFactory.getLogger("logger4SourceMsg");
 
-    private static final Logger log = LoggerFactory.getLogger(KafkaSourceTask.class);
+    private static final Logger log = LoggerFactory.getLogger(SourceTask.class);
     private KafkaConsumer<ByteBuffer, ByteBuffer> consumer;
     private KeyValue config;
     private List<String> topicList;
@@ -59,13 +60,12 @@ public class KafkaSourceTask extends SourceTask {
     private MyOffsetCommitCallback commitCallback =  new MyOffsetCommitCallback();
 
     private long nextCommitstamp = 0l;
-    private long commitInterval = 2000;
+    private long commitInterval = 5000;
     @Override
     public Collection<SourceDataEntry> poll() {
         try {
 
-            ArrayList<SourceDataEntry> entries = new ArrayList<>();
-            ConsumerRecords<ByteBuffer, ByteBuffer> records;
+            ConsumerRecords<ByteBuffer, ByteBuffer> records = null;
 
             //注意consumer非线程安全，所以提交位移时候的定时线程会导致consumer报错
 
@@ -74,24 +74,33 @@ public class KafkaSourceTask extends SourceTask {
                 nextCommitstamp = System.currentTimeMillis() + commitInterval;
             }
 
-            for (TopicPartition tp : currentTPList) {
-                final ByteBuffer topicBuffer = ByteBuffer.wrap((tp.topic() + "-" + tp.partition()).getBytes());
-
-                final ByteBuffer position = context.positionStorageReader().getPosition(topicBuffer);
-                if (position == null) {
-                    //do nothing
-                } else {
-                    //发送到rocketMQ成功后会更新消费位移,那边也是同步块代码,等又来到这边以后,正常情况下位移都提交了
-                    long local_offset = Long.parseLong(new String(position.array()));
-                    consumer.seek(tp, local_offset+1);
-                }
+            try{
+                overridePositionOffset();
+            }catch (Exception ex){
+                log.warn(ex.getMessage(),ex);
+                return null;
             }
+
+/*
+[INFO ] 22-04-16 14:37:36,248 [WorkTask-Executor--2-1             ] [RocketMQRuntime                    ] putPosition 28236
+[INFO ] 22-04-16 14:37:36,248 [WorkTask-Executor--2-1             ] [o.a.r.c.k.c.KafkaSourceTask        ] seek offset 28237
+[INFO ] 22-04-16 14:37:36,249 [WorkTask-Executor--2-1             ] [o.a.k.c.c.i.ConsumerCoordinator    ] Revoking previously assigned partitions [kafkaconnect-0] for group connector-consumer-group
+[INFO ] 22-04-16 14:37:36,249 [WorkTask-Executor--2-1             ] [o.a.r.c.k.c.KafkaSourceTask        ] onPartitionsRevoked Partitions revoked WorkTask-Executor--2-1,[kafkaconnect-0]
+[INFO ] 22-04-16 14:37:36,250 [WorkTask-Executor--2-1             ] [o.a.k.c.c.i.AbstractCoordinator    ] (Re-)joining group connector-consumer-group
+[INFO ] 22-04-16 14:37:36,253 [WorkTask-Executor--2-1             ] [o.a.k.c.c.i.AbstractCoordinator    ] Successfully joined group connector-consumer-group with generation 18
+[INFO ] 22-04-16 14:37:36,255 [WorkTask-Executor--2-1             ] [o.a.k.c.c.i.ConsumerCoordinator    ] Setting newly assigned partitions [kafkaconnect-0] for group connector-consumer-group
+[INFO ] 22-04-16 14:37:36,255 [WorkTask-Executor--2-1             ] [o.a.r.c.k.c.KafkaSourceTask        ] onPartitionsAssigned Partitions [kafkaconnect-0]
+[INFO ] 22-04-16 14:37:36,266 [WorkTask-Executor--2-1             ] [RocketMQRuntime                    ] Successful send message to RocketMQ: kafka offset:kafkaconnect-0:28236,rocketMQ msgID:C0A80268194818B4AAC25062DC846E54
+ */
+
+            //上面28236重新消费了一次，也就是说，如果在poll的时候发生了重平衡,可能会重复消费，所以要在重平衡里面也set最新位移
 
             records = consumer.poll(2000);
 
+            ArrayList<SourceDataEntry> entries = new ArrayList<>(records.count());
+
             for (ConsumerRecord<ByteBuffer, ByteBuffer> record : records) {
                 String topic_partition = record.topic() + "-" + record.partition();
-                log.debug("Received {} record: {} ", topic_partition, record);
                 //header
                 Headers headers = record.headers();
                 Map<String, byte[]> map = new HashMap<>(4);
@@ -152,13 +161,32 @@ public class KafkaSourceTask extends SourceTask {
                 entries.add(entry);
             }
 
-            log.debug("poll return entries size {} ", entries.size());
             return entries;
         } catch (Exception e) {
             e.printStackTrace();
             log.error("poll exception {}", e);
         }
         return null;
+    }
+
+    private void overridePositionOffset() {
+        for (TopicPartition tp : currentTPList) {
+            final ByteBuffer topicBuffer = ByteBuffer.wrap((tp.topic() + "-" + tp.partition()).getBytes());
+
+            final ByteBuffer position = context.positionStorageReader().getPosition(topicBuffer);
+            if (position == null) {
+                //do nothing
+            } else {
+                //发送到rocketMQ成功后会更新消费位移,那边也是同步块代码,等又来到这边以后,正常情况下位移都提交了
+                long local_offset = Long.parseLong(new String(position.array()));
+                try{
+                    consumer.seek(tp, local_offset+1);
+                    logger4SourceMsg.info(String.format("kafka consumer seek offset %s:%s", tp, local_offset + 1));
+                }catch (Exception ex){
+                    throw new RuntimeException("consumer seek offset failed may be the partition have not belong to this consumer ,and will try again..",ex);
+                }
+            }
+        }
     }
 
     @Override
@@ -170,9 +198,11 @@ public class KafkaSourceTask extends SourceTask {
         props.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, this.config.getString(ConfigDefine.BOOTSTRAP_SERVER));
         props.put(ConsumerConfig.GROUP_ID_CONFIG, this.config.getString(ConfigDefine.GROUP_ID));
         props.put(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, "false");
+        props.put(ConsumerConfig.MAX_POLL_RECORDS_CONFIG, 150);
         props.put(ConsumerConfig.AUTO_COMMIT_INTERVAL_MS_CONFIG, "1000");
         props.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, "org.apache.kafka.common.serialization.ByteBufferDeserializer");
         props.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, "org.apache.kafka.common.serialization.ByteBufferDeserializer");
+        props.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "latest");
 
         this.consumer = new KafkaConsumer<>(props);
 
@@ -284,8 +314,16 @@ public class KafkaSourceTask extends SourceTask {
         }
 
         if (!commitOffsets.isEmpty()) {
-            consumer.commitSync(commitOffsets);
-            commitCallback.onComplete(commitOffsets,null);
+            try{
+                Map map = new HashMap();
+                for (Map.Entry<TopicPartition, OffsetAndMetadata> entry : commitOffsets.entrySet()) {
+                    map.put(entry.getKey(),entry.getValue());
+                    consumer.commitSync(map);
+                }
+                consumer.commitSync(commitOffsets);
+            }catch (Exception ex){
+                commitCallback.onComplete(commitOffsets,ex);
+            }
         }
     }
 
@@ -294,11 +332,14 @@ public class KafkaSourceTask extends SourceTask {
         @Override
         public void onComplete(Map<TopicPartition, OffsetAndMetadata> map, Exception e) {
             if (e != null) {
-                log.warn("commit kafka Offset async excepiton", e);
                 map.entrySet().stream().forEach((Map.Entry<TopicPartition, OffsetAndMetadata> entry) -> {
-                    log.warn("commit kafka Offset exception, TopicPartition: {} offset: {}", entry.getKey().toString(), entry.getValue().offset());
+                    logger4SourceMsg.warn("commit kafka Offset exception, TopicPartition: {} offset: {}", entry.getKey().toString(), entry.getValue().offset());
                 });
-                return;
+                logger4SourceMsg.error("commit kafka offset error ",e);
+            }else{
+                map.entrySet().stream().forEach((Map.Entry<TopicPartition, OffsetAndMetadata> entry) -> {
+                    logger4SourceMsg.warn("commit kafka Offset finish, TopicPartition: {} offset: {}", entry.getKey().toString(), entry.getValue().offset());
+                });
             }
         }
     }
@@ -308,6 +349,12 @@ public class KafkaSourceTask extends SourceTask {
         @Override
         public void onPartitionsAssigned(Collection<TopicPartition> partitions) {
             currentTPList.addAll(partitions);
+            try{
+                //重置位移
+                overridePositionOffset();
+            }catch (Exception ex){
+                log.warn(ex.getMessage(),ex);
+            }
             log.info("onPartitionsAssigned Partitions {}",partitions);
         }
 

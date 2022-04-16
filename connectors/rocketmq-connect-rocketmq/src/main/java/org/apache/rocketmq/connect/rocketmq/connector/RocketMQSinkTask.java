@@ -16,21 +16,21 @@ import org.slf4j.LoggerFactory;
 
 import java.nio.charset.StandardCharsets;
 import java.util.*;
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.TimeUnit;
+import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * rocketMQ消费位移的提交不在这里处理，而在框架里面，只要不抛异常出去就会提交最新位移
  */
 public class RocketMQSinkTask extends SinkTask {
     private static Logger logger = LoggerFactory.getLogger(RocketMQSinkTask.class);
+    private static Logger logger4SinkMsg = LoggerFactory.getLogger("logger4SinkMsg");
 
     private KafkaProducer kafkaProducer;
     private KeyValue config;
     private static final byte[] TRUE_BYTES = "true".getBytes(StandardCharsets.UTF_8);
 
     /**
-     * send to kafka 针对单线程0 GC的目标做了一定优化，不能在多线程环境下跑哈
      * @param sinkDataEntries
      */
     @Override
@@ -48,12 +48,7 @@ public class RocketMQSinkTask extends SinkTask {
         Map<String,String> headerPayLoad;
 
         final CountDownLatch countDownLatch = new CountDownLatch(sinkDataEntries.size());
-        Callback callback = (metadata, exception) -> {
-            countDownLatch.countDown();
-            if (exception!=null) {
-                logger.error("msg send to kafka failed async",exception);
-            }
-        };
+        AtomicBoolean successAll = new AtomicBoolean(true);
 
         for (SinkDataEntry entry : sinkDataEntries) {
 
@@ -70,6 +65,17 @@ public class RocketMQSinkTask extends SinkTask {
             schema = entry.getSchema();
 
             header = schema.getField("header");
+
+            Callback callback = (metadata, exception) -> {
+                try{
+                    if (exception!=null) {
+                        successAll.set(false);
+                        logger4SinkMsg.error(String.format("msg send to kafka failed async in callBack entry:%s",entry),exception);
+                    }
+                }finally {
+                    countDownLatch.countDown();
+                }
+            };
 
             headerPayLoad = (Map<String,String>) payload[header.getIndex()];
             if (Boolean.parseBoolean(headerPayLoad.get("by_connector"))) {
@@ -92,14 +98,29 @@ public class RocketMQSinkTask extends SinkTask {
             //注意如果key不为null时候的顺序性要求,这里key不空一定会被路由到同一个kafka的queue里面
             //这tm是异步啊,差点就写BUG了
             ProducerRecord record = new ProducerRecord(topic,null,payload[key.getIndex()], Bytes.wrap((byte[]) payload[value.getIndex()]),headerList);
-            //logger.info("kafka msg send:"+new String((byte[]) payload[value.getIndex()]));
-            kafkaProducer.send(record,callback);
+            if (payload[key.getIndex()]!=null) {
+                try {
+                    final Future<RecordMetadata> send = kafkaProducer.send(record);
+                    final RecordMetadata recordMetadata = send.get(5000, TimeUnit.MILLISECONDS);
+                    callback.onCompletion(recordMetadata,null);
+                } catch (Exception e) {
+                    logger4SinkMsg.error(String.format("send sync to kafka failed :%s", entry));
+                    //只要任何一条SYNC消息报错，整个直接异常抛出去了，也就不需要countLatch-1了
+                    throw new RuntimeException("send sync to kafka failed :"+record);
+                }
+            }else{
+                //异步
+                kafkaProducer.send(record,callback);
+            }
         }
         try {
-            final boolean await = countDownLatch.await(15 * 1000, TimeUnit.MILLISECONDS);
+            final boolean await = countDownLatch.await(10 * 60 * 1000, TimeUnit.MILLISECONDS);
             if (!await) {
                 //超时了
                 throw new RuntimeException("countDownLatch time out when send msg to kafka and will consume rocketMQ message again");
+            }
+            if (!successAll.get()) {
+                throw new RuntimeException("msg async send to kafka call back response failed and will consume rocketMQ message again");
             }
         } catch (InterruptedException e) {
             throw new RuntimeException("countDownLatch was interrupted when send msg to kafka and will consume rocketMQ message again");

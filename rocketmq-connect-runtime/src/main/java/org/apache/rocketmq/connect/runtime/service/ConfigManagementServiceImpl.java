@@ -74,7 +74,7 @@ public class ConfigManagementServiceImpl implements ConfigManagementService {
 
     private final Plugin plugin;
 
-    private final String configManagePrefix = "ConfigManage";
+    private final String configManagePrefix = "connector-configManage";
 
     public ConfigManagementServiceImpl(ConnectConfig connectConfig, Plugin plugin) {
 

@@ -56,6 +56,7 @@ import org.slf4j.LoggerFactory;
 public class WorkerSinkTask implements WorkerTask {
 
     private static final Logger log = LoggerFactory.getLogger(LoggerName.ROCKETMQ_RUNTIME);
+    private static Logger logger4SinkMsg = LoggerFactory.getLogger("logger4SinkMsg");
 
     /**
      * The configuration key that provides the list of topicNames that are inputs for this SinkTask.
@@ -120,7 +121,6 @@ public class WorkerSinkTask implements WorkerTask {
      * 避免GC
      */
     private static final Integer MAX_MESSAGE_NUM = 64;
-    final List<SinkDataEntry> sinkDataEntries = new ArrayList<>(MAX_MESSAGE_NUM);
 
     public WorkerSinkTask(String connectorName,
                           SinkTask sinkTask,
@@ -245,7 +245,7 @@ public class WorkerSinkTask implements WorkerTask {
                 public void run() {
                     commitOffset();
                 }
-            },3000,2000, TimeUnit.MILLISECONDS);
+            },3000,5000, TimeUnit.MILLISECONDS);
 
             state.compareAndSet(WorkerTaskState.PENDING, WorkerTaskState.RUNNING);
 
@@ -352,10 +352,10 @@ public class WorkerSinkTask implements WorkerTask {
             if (nextPullTime!=null && nextPullTime > System.currentTimeMillis()) {
                 continue;
             }
+            logger4SinkMsg.info("consumerPullRocketMQ pull offset {}:{}",entry.getKey(),entry.getValue());
             final PullResult pullResult = consumerPullRocketMQ.pull(entry.getKey(), "*", entry.getValue(), MAX_MESSAGE_NUM);
 
             if (pullResult.getPullStatus().equals(PullStatus.FOUND)) {
-                //log.info("pull offset " + entry.getValue());
                 final List<MessageExt> messages = pullResult.getMsgFoundList();
                 //调用sink.put()进行处理,如果这里抛出异常，那么就下面也不会走了。只要这里不抛异常,后面正常提交位移发到rocketMQ上面去
                 //如果抛出异常，那么不会提交位移
@@ -364,15 +364,25 @@ public class WorkerSinkTask implements WorkerTask {
                 }catch (Throwable ex){
                     //如果抛出异常,每个Queue按照之前的offset再重新消费一次 直到成功或者任务被手动终止，这里continue掉不更新位移，然后继续消费下一个messageQueue
                     //TODO 发送到告警信息里面
-                    log.error("receiveMessages failed but will continue consume msg again until it success",ex);
                     messageQueuesSuspendWhileMap.put(entry.getKey(), System.currentTimeMillis() + 1000);
+                    logger4SinkMsg.error("handle receiveMessages failed batch {}",messages);
                     continue;
+                }
+                if (ConnectConfig.isLogMsgDetail()) {
+                    for (MessageExt messageExt : messages) {
+                        final String byConnector = messageExt.getUserProperty("by_connector");
+                        if (!Boolean.parseBoolean(byConnector)) {
+                            logger4SinkMsg.info("successful to send msg to kafka msgId:"+messageExt.getMsgId());
+                        }
+                    }
                 }
 
                 //更新消费位移,如果此时已经发生重平衡,原先的queue不属于自己了,那么位移还是要提交的。这里一定会造成消息重复。另外原本的rocketMQ的offset提交机制应该也会重复。
                 messageQueuesOffsetMap.put(entry.getKey(), pullResult.getNextBeginOffset());
+                logger4SinkMsg.info("messageQueuesOffsetMap put offset {}:{} ",entry.getKey(),pullResult.getNextBeginOffset());
                 //放到这个service里面的会同步到rocketMQ上其他节点 有必要吗？大家都是同一个消费组，既然是同一个消费组那么位移本来就在broker有保存，何必同步给其他节点？
                 offsetManagementService.putPosition(convertToByteBufferKey(entry.getKey()), convertToByteBufferValue(pullResult.getNextBeginOffset()));
+                logger4SinkMsg.info("offsetManagementService put offset {}:{} ",entry.getKey(),pullResult.getNextBeginOffset());
             }else{
                 //如果本queue没拉到消息就延迟5秒
                 messageQueuesSuspendWhileMap.put(entry.getKey(), System.currentTimeMillis() + 5000);
@@ -392,11 +402,11 @@ public class WorkerSinkTask implements WorkerTask {
                     continue;
                 }
                 consumerPullRocketMQ.updateConsumeOffset(entry.getKey(),entry.getValue());
+                log.info(String.format("consumerPullRocketMQ commit offset finish %s:%s", entry.getKey(),entry.getValue()));
             } catch (MQClientException e) {
-                log.error("updateConsumeOffset offset failed",e);
+                log.error(String.format("consumerPullRocketMQ commit offset failed %s:%s", entry.getKey(),entry.getValue()),e);
             }
         }
-        log.debug("workSinkTask commit offset finish...");
     }
     @Override
     public void stop() {
@@ -410,10 +420,8 @@ public class WorkerSinkTask implements WorkerTask {
      * @param messages
      */
     private void receiveMessages(List<MessageExt> messages) {
+        final List<SinkDataEntry> sinkDataEntries = new ArrayList<>(MAX_MESSAGE_NUM);
         for (MessageExt message : messages) {
-            if (ConnectConfig.isLogMsgDetail()) {
-                log.info("Sink Received one message:"+new String(message.getBody()==null?new byte[0]:message.getBody()));
-            }
             SinkDataEntry sinkDataEntry = convertToSinkDataEntry(message);
             sinkDataEntries.add(sinkDataEntry);
         }
