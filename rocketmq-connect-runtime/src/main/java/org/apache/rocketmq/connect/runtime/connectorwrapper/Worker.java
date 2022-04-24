@@ -350,6 +350,13 @@ public class Worker {
                 DefaultMQPullConsumer consumer = ConnectUtil.initDefaultMQPullConsumer(connectConfig);
                 if (connectConfig.isAutoCreateGroupEnable()) {
                     //这里我们可以借鉴一下！rocketMQ控制台的创建和使用
+                    //TODO consumerGroup的维度以connectorName为准。相同connectorName作为组,其下各个task的配置一定是相同的。不同的connectorName用来同步不同的topic或者一组固定的topic
+                    //connector之间如果有重复的topic,则因为组不同，必然从rocketMQ拉2次消息重复投递。
+                    //组内配置完全相同，拉消息应该没问题。但是持久化文件和位移在节点间的同步机制都不会看消费组
+                    //因为我们的目的是同步topic,不管是那个connectorName,只能能把消息同步过去就OK就算这个topic同步成功,不需要在乎位移。
+                    //1、划分group，而不是一次性订阅所有topic，是为了让每个组负责自己的一个topic，各个组共同完成MQ集群的同步。组内可以用taskNum横向扩展最大到queue的读写数量上。
+                    //2、不划分group，直接一次性订阅所有topic，假设有100个task用来同步数据。这100个task都是单独的consumer实例，共同消费所有的topic进行负载均衡分配
+                    consumer.setConsumerGroup(connectConfig.getRmqConsumerGroup()+"-"+connectorName);
                     log.info("create sub group for sink task:"+consumer.getConsumerGroup());
                     ConnectUtil.createSubGroup(connectConfig, consumer.getConsumerGroup());
                 }

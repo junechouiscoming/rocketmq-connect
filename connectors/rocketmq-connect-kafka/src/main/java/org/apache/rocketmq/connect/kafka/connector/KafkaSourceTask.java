@@ -96,7 +96,6 @@ public class KafkaSourceTask extends SourceTask {
             //上面28236重新消费了一次，也就是说，如果在poll的时候发生了重平衡,可能会重复消费，所以要在重平衡里面也set最新位移
 
             records = consumer.poll(2000);
-
             ArrayList<SourceDataEntry> entries = new ArrayList<>(records.count());
 
             for (ConsumerRecord<ByteBuffer, ByteBuffer> record : records) {
@@ -104,25 +103,17 @@ public class KafkaSourceTask extends SourceTask {
                 //header
                 Headers headers = record.headers();
                 Map<String, byte[]> map = new HashMap<>(4);
-                boolean run = true;
                 if (headers!=null) {
                     for (Header header : headers) {
                         String key = header.key();
                         byte[] value = header.value();
-
-                        //skip this message
-                        if ("by_connector".equals(key) && Boolean.parseBoolean(new String(value))) {
-                            run = false;
-                            break;
-                        }
+                        //这里会把kafka header中的by_connector也放入，如果有的话。后续会判断然后skip掉这条msg
                         map.put(key,value);
                     }
                 }
-                if (!run) {
-                    continue;
-                }
 
-                map.put("by_connector",TRUE_BYTES);
+                //
+                //map.put("by_connector",TRUE_BYTES);
 
                 Schema schema = new Schema();
                 List<Field> fields = new ArrayList<>();

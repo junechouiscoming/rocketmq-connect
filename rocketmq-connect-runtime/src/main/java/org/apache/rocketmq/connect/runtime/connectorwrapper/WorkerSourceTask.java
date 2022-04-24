@@ -146,6 +146,9 @@ public class WorkerSourceTask implements WorkerTask {
             //线程运行时候,类加载器必须得设置为pluginClassLoader,否则下面的sourceTask跑不起来
             //对于其他代码应该是无影响的，因为pluginClassLoader的父类加载器是appClassLoader
             Plugin.compareAndSwapLoaders(classLoader);
+
+            //这个参数会导致消息无序
+            producerToRocketMQ.setSendLatencyFaultEnable(true);
             producerToRocketMQ.start();
 
             sourceTask.initialize(new SourceTaskContext() {
@@ -247,22 +250,9 @@ public class WorkerSourceTask implements WorkerTask {
                 }
                 sourceMessage.putUserProperty("by_connector","true");
                 sourceMessage.setBody(value.length==0?"default empty body for no exception to send".getBytes(StandardCharsets.UTF_8):value);
-                //header
-                if (header!=null) {
-                    List<String> hLst = new ArrayList<>();
-                    for (Map.Entry<String, byte[]> entry : header.entrySet()) {
-                        hLst.add(entry.getKey());
-                        sourceMessage.putUserProperty(entry.getKey(),new String(entry.getValue()));
-                    }
-                }
+
                 final String partitionStr = new String(partition.array());
-                callBackOffsetTreeMap.putIfAbsent(partitionStr, new ConcurrentSkipListMap<>());
-
-                sendOffsetTeeSet.putIfAbsent(partitionStr, new TreeSet<>());
-
                 final String positionStr = new String(position.array());
-                TreeSet<Long> treeSet = sendOffsetTeeSet.get(partitionStr);
-                treeSet.add(Long.parseLong(positionStr));
 
                 //拉取消息时候指定位移
                 sendCallback = new SendCallback() {
@@ -295,20 +285,64 @@ public class WorkerSourceTask implements WorkerTask {
                         }
                     }
                 };
-                try {
-                    //需要设置messageQueueSelector 如果kafka的key不null的话,这样从kafka拉下来就都能send到同一个rocketMQ的queue里了
-                    if (sourceMessage.getKeys()!=null && sourceMessage.getKeys().length()>0) {
-                        //带key的消息一定要保证顺序性
-                        final SendResult sendResult = producerToRocketMQ.send(sourceMessage, new MessageQueueSelector() {
-                            @Override
-                            public MessageQueue select(List<MessageQueue> mqs, Message msg, Object arg) {
-                                int i = toPositive(murmur2(sourceMessage.getKeys().getBytes(StandardCharsets.UTF_8))) % mqs.size();
-                                return mqs.get(i);
+
+                boolean ignore = false;
+                //header
+                if (header!=null) {
+                    final byte[] byConnectors = header.get("by_connector");
+                    if(byConnectors!=null && byConnectors.length >0 && Boolean.parseBoolean(new String(byConnectors))){
+                        //skip msg
+                        ignore = true;
+                    }else{
+                        for (Map.Entry<String, byte[]> entry : header.entrySet()) {
+                            if("TAGS".equals(entry.getKey())){
+                                if (entry.getValue() != null && entry.getValue().length > 0) {
+                                    sourceMessage.setTags(new String(entry.getValue()));
+                                }
+                            }else if("FullLinkContext".equals(entry.getKey())){
+                                if (entry.getValue() != null && entry.getValue().length > 0) {
+                                    sourceMessage.putUserProperty(entry.getKey(),new String(entry.getValue()));
+                                }
+                            }else{
+                                //do nothing,不同步其他key,因为有可能冲突,并且也没必要同步其他key
                             }
-                        }, null);
+                            //sourceMessage.putUserProperty(entry.getKey(),new String(entry.getValue()));
+                        }
+                    }
+                }
+
+                callBackOffsetTreeMap.putIfAbsent(partitionStr, new ConcurrentSkipListMap<>());
+
+                sendOffsetTeeSet.putIfAbsent(partitionStr, new TreeSet<>());
+
+                TreeSet<Long> treeSet = sendOffsetTeeSet.get(partitionStr);
+                treeSet.add(Long.parseLong(positionStr));
+
+
+                //send to rocketMQ
+                try {
+                    if (ignore) {
+                        //直接进入下一条消息，这条消息无需发送
+                        final SendResult sendResult = new SendResult();
+                        sendResult.setSendStatus(SendStatus.SEND_OK);
+                        sendResult.setMsgId("by_connector = true so ignore");
+                        //不需要发送，但是需要更新消费位移
                         sendCallback.onSuccess(sendResult);
                     }else{
-                        producerToRocketMQ.send(sourceMessage,sendCallback);
+                        //需要设置messageQueueSelector 如果kafka的key不null的话,这样从kafka拉下来就都能send到同一个rocketMQ的queue里了
+                        if (sourceMessage.getKeys()!=null && sourceMessage.getKeys().length()>0) {
+                            //带key的消息一定要保证顺序性
+                            final SendResult sendResult = producerToRocketMQ.send(sourceMessage, new MessageQueueSelector() {
+                                @Override
+                                public MessageQueue select(List<MessageQueue> mqs, Message msg, Object arg) {
+                                    int i = toPositive(murmur2(sourceMessage.getKeys().getBytes(StandardCharsets.UTF_8))) % mqs.size();
+                                    return mqs.get(i);
+                                }
+                            }, null);
+                            sendCallback.onSuccess(sendResult);
+                        }else{
+                            producerToRocketMQ.send(sourceMessage,sendCallback);
+                        }
                     }
                 } catch (Exception e) {
                     throw new MQClientException("Send message to rocketMQ error. message: {}",e);

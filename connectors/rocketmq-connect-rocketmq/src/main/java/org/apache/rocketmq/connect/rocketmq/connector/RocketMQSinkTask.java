@@ -90,8 +90,13 @@ public class RocketMQSinkTask extends SinkTask {
             value = schema.getField("value");
 
             List<RecordHeader> headerList = new ArrayList<>();
+            //注释的原因是，rocketMQ没有任何Header字段需要同步到kafka,其中Delay没用，而Keys会额外处理，Tags这里才处理。除此之外不兼容其他字段
             for (Map.Entry<String, String> stringEntry : headerPayLoad.entrySet()) {
-                headerList.add(new RecordHeader(stringEntry.getKey(),stringEntry.getValue().getBytes(StandardCharsets.UTF_8)));
+                if("TAGS".equals(stringEntry.getKey())){
+                    headerList.add(new RecordHeader(stringEntry.getKey(),stringEntry.getValue().getBytes(StandardCharsets.UTF_8)));
+                }else if("FullLinkContext".equals(stringEntry.getKey())){
+                    headerList.add(new RecordHeader(stringEntry.getKey(),stringEntry.getValue().getBytes(StandardCharsets.UTF_8)));
+                }
             }
             headerList.add(new RecordHeader("by_connector", TRUE_BYTES));
 

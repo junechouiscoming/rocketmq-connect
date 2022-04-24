@@ -37,6 +37,7 @@ public class KafkaSourceConnector extends SourceConnector {
     private static final Logger log = LoggerFactory.getLogger(KafkaSourceConnector.class);
 
     private KeyValue connectConfig;
+    private String connectorName;
 
     public KafkaSourceConnector() {
         super();
@@ -57,6 +58,7 @@ public class KafkaSourceConnector extends SourceConnector {
             }
         }
         this.connectConfig = config;
+        this.connectorName = config.getString("connectorName");
         return "";
     }
 
@@ -99,7 +101,7 @@ public class KafkaSourceConnector extends SourceConnector {
             KeyValue config = new DefaultKeyValue();
             config.put(ConfigDefine.BOOTSTRAP_SERVER, connectConfig.getString(ConfigDefine.BOOTSTRAP_SERVER));
             config.put(ConfigDefine.TOPICS, connectConfig.getString(ConfigDefine.TOPICS));
-            config.put(ConfigDefine.GROUP_ID,"connector-consumer-group");
+            config.put(ConfigDefine.GROUP_ID,"connector-consumer-group-"+connectorName);
             config.put(ConfigDefine.CONNECTOR_CLASS, "org.apache.rocketmq.connect.kafka.connector.KafkaSourceConnector");
             configs.add(config);
         }

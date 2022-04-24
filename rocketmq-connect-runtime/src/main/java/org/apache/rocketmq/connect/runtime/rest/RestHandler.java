@@ -251,6 +251,7 @@ public class RestHandler {
         for (Object key : keyValue.keySet()) {
             configs.put((String) key, keyValue.get(key).toString());
         }
+        configs.put("connectorName", connectorName);
         try {
             //mz 创建一个新的connector实例
             connectController.getConfigManagementService().putNewConnectorConfig(connectorName, configs);

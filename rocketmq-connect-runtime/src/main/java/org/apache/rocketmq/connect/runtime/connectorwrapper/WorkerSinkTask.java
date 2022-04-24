@@ -144,16 +144,6 @@ public class WorkerSinkTask implements WorkerTask {
         this.classLoader = classLoader;
     }
 
-    public WorkerSinkTask(String connectorName,
-                          SinkTask sinkTask,
-                          ConnectKeyValue taskConfig,
-                          PositionManagementService offsetManagementService,
-                          Converter recordConverter,
-                          DefaultMQPullConsumer consumerPullRocketMQ,
-                          AtomicReference<WorkerState> workerState) {
-        this(connectorName,sinkTask,taskConfig,offsetManagementService,recordConverter, consumerPullRocketMQ,workerState,null);
-    }
-
     /**
      * Start a sink task, and receive data entry from MQ cyclically.
      */
@@ -206,6 +196,7 @@ public class WorkerSinkTask implements WorkerTask {
 
             String[] topicNames = topicNamesStr.split(COMMA);
             for (String topicName : topicNames) {
+                //注册多次，但只会有最后一个listener生效，不过topic是add到set集合的
                 consumerPullRocketMQ.registerMessageQueueListener(topicName, new MessageQueueListener() {
                     /**
                      * @param mqDivided 分配给自己的
