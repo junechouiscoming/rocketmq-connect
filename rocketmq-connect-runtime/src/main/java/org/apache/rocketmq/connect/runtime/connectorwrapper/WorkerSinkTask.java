@@ -393,9 +393,9 @@ public class WorkerSinkTask implements WorkerTask {
                     continue;
                 }
                 consumerPullRocketMQ.updateConsumeOffset(entry.getKey(),entry.getValue());
-                log.info(String.format("consumerPullRocketMQ commit offset finish %s:%s", entry.getKey(),entry.getValue()));
+                logger4SinkMsg.info(String.format("consumerPullRocketMQ commit offset finish %s:%s", entry.getKey(),entry.getValue()));
             } catch (MQClientException e) {
-                log.error(String.format("consumerPullRocketMQ commit offset failed %s:%s", entry.getKey(),entry.getValue()),e);
+                logger4SinkMsg.error(String.format("consumerPullRocketMQ commit offset failed %s:%s", entry.getKey(),entry.getValue()),e);
             }
         }
     }
