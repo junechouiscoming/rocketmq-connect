@@ -54,7 +54,7 @@ public class TaskPositionCommitService extends ServiceThread {
         while (!this.isStopped()) {
             try{
                 commitTaskPosition();
-                this.waitForRunning(5000);
+                this.waitForRunning(7*1000);
             }catch (Exception ex){
                 log.error("commitTaskPosition failed",ex);
             }

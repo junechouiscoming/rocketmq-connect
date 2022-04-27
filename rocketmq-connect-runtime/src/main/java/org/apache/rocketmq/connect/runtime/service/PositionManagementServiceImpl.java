@@ -24,10 +24,7 @@ import com.google.common.primitives.Longs;
 import io.netty.util.internal.ConcurrentSet;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
-import java.util.HashSet;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
+import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Collectors;
 
@@ -104,7 +101,20 @@ public class PositionManagementServiceImpl implements PositionManagementService 
             ConnectUtil.createGroupName(positionManagePrefix, connectConfig.getWorkerId()),
             new PositionChangeCallback(),
             new JsonConverter(),
-            new ByteMapConverter());
+            new ByteMapConverter()){
+            @Override
+            protected String printMsg(Object o, Object o2) {
+                final String key = o.toString();
+                final Map<ByteBuffer,ByteBuffer> map = (Map) o2;
+                Map map1 = new HashMap();
+                for (Map.Entry<ByteBuffer, ByteBuffer> entry : map.entrySet()) {
+                    final String key1 = new String(entry.getKey().array());
+                    final String value1 = entry.getValue() == null ? "" : new String(entry.getValue().array());
+                    map1.put(key1, value1);
+                }
+                return "\n"+key+"="+JSON.toJSONString(map1,SerializerFeature.PrettyFormat);
+            }
+        };
         this.positionUpdateListener = new HashSet<>();
         this.needSyncPartition = new ConcurrentSet<>();
     }
@@ -260,6 +270,7 @@ public class PositionManagementServiceImpl implements PositionManagementService 
         if (null == result || 0 == result.size()) {
             return changed;
         }
+        StringBuilder logBuilder = new StringBuilder();
 
         for (Map.Entry<ByteBuffer, ByteBuffer> newEntry : result.entrySet()) {
             boolean find = false;
@@ -272,8 +283,11 @@ public class PositionManagementServiceImpl implements PositionManagementService 
                     if(Long.parseLong(newOffsetStr) > Long.parseLong(existedOffsetStr)){
                         changed = true;
                         existedEntry.setValue(newEntry.getValue());
+                        logBuilder.append(String.format("receive a higher position %s %s->%s", new String(existedEntry.getKey().array()), Long.parseLong(existedOffsetStr), Long.parseLong(newOffsetStr))).append("\n");
+                    }else if(Long.parseLong(newOffsetStr) == Long.parseLong(existedOffsetStr)){
+                        //do nothing
                     }else{
-                        logger.info("receive a lower position and will ignore it");
+                        logBuilder.append(String.format("receive a lower position %s %s->%s", new String(existedEntry.getKey().array()), Long.parseLong(existedOffsetStr), Long.parseLong(newOffsetStr))).append("\n");
                     }
                     break;
                 }
@@ -281,8 +295,10 @@ public class PositionManagementServiceImpl implements PositionManagementService 
             if (!find) {
                 changed = true;
                 positionStore.put(newEntry.getKey(), newEntry.getValue());
+                logBuilder.append(String.format("receive a new key position %s:%s", new String(newEntry.getKey().array()),newEntry.getValue())).append("\n");
             }
         }
+        logger.info("\n"+logBuilder.toString());
         return changed;
     }
 

@@ -108,7 +108,21 @@ public class OffsetManagementServiceImpl implements PositionManagementService {
             ConnectUtil.createGroupName(offsetManagePrefix, connectConfig.getWorkerId()),
             new OffsetChangeCallback(),
             new JsonConverter(),
-            new ByteMapConverter());
+            new ByteMapConverter()){
+
+            @Override
+            protected String printMsg(Object o, Object o2) {
+                final String key = o.toString();
+                final Map<ByteBuffer,ByteBuffer> map = (Map) o2;
+                Map map1 = new HashMap();
+                for (Map.Entry<ByteBuffer, ByteBuffer> entry : map.entrySet()) {
+                    final String key1 = new String(entry.getKey().array());
+                    final String value1 = entry.getValue() == null ? "" : new String(entry.getValue().array());
+                    map1.put(key1, value1);
+                }
+                return "\n"+key+"="+JSON.toJSONString(map1,SerializerFeature.PrettyFormat);
+            }
+        };
         this.offsetUpdateListener = new HashSet<>();
         this.needSyncPartition = new ConcurrentSet<>();
     }
@@ -189,7 +203,11 @@ public class OffsetManagementServiceImpl implements PositionManagementService {
         dataSynchronizer.send(OffsetChangeEnum.ONLINE_KEY.name(), offsetStore.getKVMap());
     }
 
-
+    /**
+     * positionStore中不是所有的kv都需要同步数据，这里就是只同步needSyncPartition包含的kv
+     * 每send一次，这个needSyncPartition就会清空一次，然后下次再put进来新kv的话这个needSyncPartition就又有值了
+     * 相当于说needSyncPartition就是上次send之后又新增/变化的数据
+     */
     private void sendNeedSynchronizeOffset() {
 
         Set<ByteBuffer> needSyncPartitionTmp = needSyncPartition;
@@ -199,6 +217,8 @@ public class OffsetManagementServiceImpl implements PositionManagementService {
             .collect(Collectors.toMap(entry -> entry.getKey(), entry -> entry.getValue()));
 
         dataSynchronizer.send(OffsetChangeEnum.OFFSET_CHANG_KEY.name(), needSyncOffset);
+
+        sendSynchronizeOffset();
     }
 
     private void sendSynchronizeOffset() {
@@ -249,6 +269,7 @@ public class OffsetManagementServiceImpl implements PositionManagementService {
             return changed;
         }
 
+        StringBuilder logBuilder = new StringBuilder();
         for (Map.Entry<ByteBuffer, ByteBuffer> newEntry : result.entrySet()) {
             boolean find = false;
             for (Map.Entry<ByteBuffer, ByteBuffer> existedEntry : offsetStore.getKVMap().entrySet()) {
@@ -260,8 +281,11 @@ public class OffsetManagementServiceImpl implements PositionManagementService {
                     if(Long.parseLong(newOffsetStr) > Long.parseLong(existedOffsetStr)){
                         changed = true;
                         existedEntry.setValue(newEntry.getValue());
+                        logBuilder.append(String.format("receive a higher offset %s %s->%s", new String(existedEntry.getKey().array()), Long.parseLong(existedOffsetStr), Long.parseLong(newOffsetStr))).append("\n");
+                    }else if(Long.parseLong(newOffsetStr) == Long.parseLong(existedOffsetStr)){
+                        //do nothing
                     }else{
-                        //logger.info("receive a lower offset and will ignore it");
+                        logBuilder.append(String.format("receive a lower offset %s %s->%s", new String(existedEntry.getKey().array()), Long.parseLong(existedOffsetStr), Long.parseLong(newOffsetStr))).append("\n");
                     }
                     break;
                 }
@@ -269,8 +293,10 @@ public class OffsetManagementServiceImpl implements PositionManagementService {
             if (!find) {
                 changed = true;
                 offsetStore.put(newEntry.getKey(), newEntry.getValue());
+                logBuilder.append(String.format("receive a new key offset %s:%s", new String(newEntry.getKey().array()),newEntry.getValue())).append("\n");
             }
         }
+        logger.info("\n"+logBuilder.toString());
         return changed;
     }
 

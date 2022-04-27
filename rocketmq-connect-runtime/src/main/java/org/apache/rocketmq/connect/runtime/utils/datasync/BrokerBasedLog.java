@@ -21,6 +21,7 @@ import com.alibaba.fastjson.JSON;
 import com.alibaba.fastjson.serializer.SerializerFeature;
 import io.openmessaging.connector.api.data.Converter;
 
+import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
@@ -204,6 +205,10 @@ public class BrokerBasedLog<K, V> implements DataSynchronizer<K, V> {
         consumer.shutdown();
     }
 
+    protected String printMsg(K k,V v){
+        return "";
+    }
+
     @Override
     public void send(K key, V value) {
 
@@ -213,14 +218,13 @@ public class BrokerBasedLog<K, V> implements DataSynchronizer<K, V> {
                 log.error("Message size is greater than {} bytes, key: {}, value {}", MAX_MESSAGE_SIZE, key, value);
                 return;
             }
-
             Map<String,Object> sendMap = new HashMap<>();
             sendMap.put(VALUE, messageBody);
             sendMap.put(WORKER_ID, workerId);
 
             producer.send(new Message(topicName, JSON.toJSONString(sendMap, SerializerFeature.WriteClassName).getBytes(StandardCharsets.UTF_8)), new SendCallback() {
                 @Override public void onSuccess(org.apache.rocketmq.client.producer.SendResult result) {
-                    log.info("Send SYS async message OK, msgId: {}  topic:{}", result.getMsgId(), topicName);
+                    log.info("Send SYS async message OK, msgId: {}  topic:{} body:{}", result.getMsgId(), topicName, printMsg(key,value));
                 }
 
                 @Override public void onException(Throwable throwable) {
