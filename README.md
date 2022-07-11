@@ -1,298 +1,198 @@
-# rocketmq-connect
-[![License](https://img.shields.io/badge/license-Apache%202-4EB1BA.svg)](https://www.apache.org/licenses/LICENSE-2.0.html)
+#概要介绍
+在我的github上的connect代码是fork出来经过我二次开发的，底层原理可以看原github的材料，在我这里用途是Kafka和RocketMQ数据双向同步，它的完成度还是很高的，只是一些诸如启动端口等参数未开放出来，需要的可以自行二次开发，核心部分是高度可用的，经过了我的完整严苛测试，是准备上生产的代码。
 
-# GitBook文档
+简单理解RocketMQ Connect就是借RocketMQ从其他系统获取数据发送到RocketMQ，然后从RocketMQ消费消息写入到其他系统。主要由Source ，Sink ，Runtime组成。
 
-[快速开始](https://rocketmq-1.gitbook.io/rocketmq-connector/quick-start/qian-qi-zhun-bei)
+Source 负责从其它系统获取数据，通过connect-runtime内置的Producer发送到RocketMQ
+Sink 负责从rocketMQ上消费消息，将数据写入到kafka
 
-[Runtime](https://rocketmq-1.gitbook.io/rocketmq-connector/rocketmq-connect-1/rocketmq-runtime)
+Runtime是Source ，Sink的运行时环境，负责加载source和sink插件，提供RESTful接口，启动task任务，集群节点之间配置同步，消费进度保存，故障转移，负载均衡等能力。
 
-# 快速开始
+![img.png](img.png)
 
-文档以rocketmq-connect-sample作为demo
+如上图，sourceTask与sinkTask运行于runtime之上，source端透过poll()将外部系统消息拉到runtime上，再由runtime无缝发送到rocketMQ中。
+而runtime会持续从rocketMQ消费消息，通过sinkTask的put方法进行消费将消息发送到kafka
 
-## 1.准备
+source与sink基于插件的形式部署在指定目录由runtime加载运行，不同source与sink之间类加载器独立，共享runtime加载器作为父加载器
+负载均衡
 
-1. 64bit JDK 1.8+;
+###<font color="oran">服务发现</font>
+节点之间的互相发现基于向rocketMQ的同一cluster-topic注册成为消费者，透过消费组内成员个数监听，进而获取当前connect-runtime节点数量，节点上下线都可以透过消费组监听器动态感知
+###<font color="oran">负载均衡</font>
+正常情况下，各节点都拥有整个系统所有的task数据，然后各节点通过运行相同的一致性hash算法(减少任务抖动)获取分配给自己的task然后运行，并动态停止不属于自己的task
+###<font color="oran">配置同步和持久化</font>
+task配置信息变动，会透过内部的config-topic发送到rocketMQ，进而被各个节点消费达到各节点中配置信息的一致性，各节点定时会将本地缓存的配置信息持久化到文件中，重启节点会先加载本地文件
+###<font color="oran">位移同步和持久化</font>
+source和sink task的消息处理位移，会定时透过rocketMQ送往其他节点，其他节点收到位移信息后会与本地位移信息进行汇总处理，并定时持久化到本地文件，达到各节点最终一致性
+###<font color="oran">位移提交保证</font>
+sink task只会在消息从rocketMQ拉取并输出到kafka收到kafka的消息发送确认标识才会更新rocketMQ的消费位移，即只要输出到kafka失败，便会无限重试拉取消息重新投送kafka。
+source task只会在消息从kafka拉取并输出到rocketMQ收到rocketMQ的消息发送确认标识才会更新kafka的消费位移，即只要输出到rocketMQ失败，便会无限重试拉取消息重新投送rocketMQ。
+消息投递可能因为重试或者task分配变动导致重复，但理论上不会丢失，而本身MQ不保证消息只被投递一次但保证一定投递至少一次，所以由于connect造成的消息重复是无所谓的。
+###<font color="oran">任务并发数动态修改</font>
+透过rest运维接口，支持实时修改task的数量并实时生效，配合一致性hash算法最大程度降低task数量变动导致的任务启停抖动。
 
-2. Maven 3.2.x或以上版本;
 
-3. A running RocketMQ cluster;
+##connector-runtime
+<font color="oran"><b>Topic</b></font>
+1. connector-cluster-topic
+2. connector-config-topic
+3. connector-offset-topic
+4. connector-position-topic
 
-## 2.构建
+<font color="oran"><b>ConsumerGroup 手工无需参与,自动创建（通过内部调用mqClientAPIImpl）</b></font>
+6. connector-consumer-group-${connectorName}
+7. connector-cluster-group
 
-```
-mvn clean install -Dmaven.test.skip=true
-```
+修改/resource配置文件 connect.conf
+workerId=CONNECTOR_WORKER_1  #本节点名称,各个worker之间必须唯一
+storePathRootDir=E:/rocketmq-connect/storeRoot #本地持久化文件路径,保存偏移量和config信息(比如任务config)
 
-## 3.配置
+<font color="oran"><b>Http port for user to access REST API</b></font>
 
-cd rocketmq-connect/rocketmq-connect-runtime/target/distribution/conf
+httpPort=8082 #rest运维地址
 
-1. 修改配置文件connect.conf
+<font color="oran"><b>Rocketmq namesrvAddr</b></font>
 
-```
-#current cluster node uniquely identifies
-workerId=DEFAULT_WORKER_1
+namesrvAddr=127.0.0.1:9876  #即connect进行同步的那个RocketMQ集群,同时也会作为connect节点内部信息交换的媒介通道
 
-# Http prot for user to access REST API
-httpPort=8081
+<font color="oran"><b>RocketMQ acl 账号需要有admin的权限</b></font>
 
-# Local file dir for config store
-storePathRootDir=～/storeRoot
+aclEnable=false
+accessKey=rocketmq
+secretKey=12345678
 
-#需要修改为自己的rocketmq
-# Rocketmq namesrvAddr
-namesrvAddr=127.0.0.1:9876  
+autoCreateGroupEnable=true #自动调用admin工具创建consumerGroup.如手工创建可设置为false,强烈建议设置为true,因为每个节点要创建的消费组不止上面2个
 
-#需要修改，修改为rocketmq-connect-sample target目录加载demo中source/sink
-# Source or sink connector jar file dir
-pluginPaths=/home/connect/file-connect/target
-``` 
+<font color="oran"><b>sink和source插件的目录,注意每个sink和source都是独立的类加载器，所以sink和souce打包时如果有依赖需要用shade打成fat包</b></font>
 
-## 4.运行
+pluginPaths=C:/Users/11722/.m2/repository/org/apache/rocketmq/rocketmq-connect-rocketmq/0.0.1-SNAPSHOT,C:/Users/11722/.m2/repository/org/apache/rocketmq/rocketmq-connect-kafka/0.0.1-SNAPSHOT
 
-返回recoketmq-connect-runtime根目录运行
-```
-sh ./run_worker.sh
-```
+<font color="oran"><b>启动java命令需携带JVM参数</b></font>
+-c E:\idea_wp\rocketmq-connect\rocketmq-connect-runtime\src\main\resources\connect.conf
 
-查看日志文件${user.home}/logs/rocketmqconnect/connect_runtime.log
-以下日志表示runtime启动成功：
+##rocketmq-connect-kafkaToRmq
 
-The worker [DEFAULT_WORKER_1] boot success.
+###发送kafka消息到rocketMQ集群
 
-```
-注：启动之前RocketMQ创建以下topic
-connector-cluster-topic 集群信息
-connector-config-topic  配置信息
-connector-offset-topic  sink消费进度
-connector-position-topic source数据处理进度
-并且为了保证消息有序，每个topic可以只建一个queue
-```
+在启动runtime之后，通过发送http消息到任意一台runtime机器，携带connector和task的参数，启动connector即可,task会自动分配轮询分配到其他runtime节点
+kafka的consumerID固定为 : connector-consumer-group-${connectorName}
 
-## 5.日志目录
+####参数说明
+1. tasks.num: 启动的task数目,各task的配置完全相同，所以如果数量超过kafka分区数的话也没用
+2. kafka.topics: kafka的topic列表,多个topic通过逗号“,”隔开。拉取消息后发到相同topic名称的rocketMQ集群中
+3. kafka.bootstrap.server: kafka的broker地址
+4. connector-class:org.apache.rocketmq.connect.kafka.connector.KafkaSourceConnector
 
- ${user.home}/logs/rocketmqconnect 
+新增Connector示例见
 
-## 6.配置文件
+GET http://127.0.0.1:8082/connectors/create/kafkaSource?config={"tasks.num":"4","kafka.topics":"kafkaconnect","kafka.bootstrap.server":"127.0.0.1:9092","connector-class":"org.apache.rocketmq.connect.kafka.connector.KafkaSourceConnector"}
 
-持久化配置文件默认目录 ～/storeRoot
+其中 127.0.0.1:8082 为runtime的任意一台机器,kafkaSource为connector的名称，connector名称需要唯一。
 
-1. connectorConfig.json connector配置持久化文件
-2. position.json        source connect数据处理进度持久化文件
-3. taskConfig.json      task配置持久化文件
-4. offset.json          sink connect数据消费进度持久化文件
+##rocketmq-connect-rmqToKafka
 
-## 7.启动source connector
+###发送rocketMQ消息到kafka集群
 
-```
-    GET请求  
-    http://(your worker ip):(port)/connectors/(connector name)?config={"connector-class":"org.apache.rocketmq.connect.file.FileSourceConnector","topic":"fileTopic","filename":"/home/connect/rocketmq-externals/rocketmq-connect/rocketmq-connect-runtime/source-file.txt","source-record-converter":"org.apache.rocketmq.connect.runtime.converter.JsonConverter"}   
-```
-   看到一下日志说明file source connector启动成功了
-   
-   2019-07-16 11:18:39 INFO pool-7-thread-1 - Source task start, config:{"properties":{"source-record-converter":"org.apache.rocketmq.connect.runtime.converter.JsonConverter","filename":"/home/connect/rocketmq-externals/rocketmq-connect/rocketmq-connect-runtime/source-file.txt","task-class":"org.apache.rocketmq.connect.file.FileSourceTask","topic":"fileTopic","connector-class":"org.apache.rocketmq.connect.file.FileSourceConnector","update-timestamp":"1563247119715"}}
-```  
-    注：创建topic："topic":"fileTopic"
-```
+在启动runtime之后，通过发送http消息到任意一台runtime机器，携带connector和task的参数，启动connector即可,task会自动分配轮询分配到其他runtime节点
+rocketMQ的consumerID固定为 : connector-consumer-group-${connectorName}
 
-#### source connector配置说明
+####参数说明
+1. tasks.num: 启动的task数目,各task的配置完全相同，所以如果数量超过messageQueue的话也没用
+2. rocketmq.topics: rocketMQ的topic列表,多个topic通过逗号“,”隔开。拉取消息后发到相同topic名称的kafka集群中
+3. kafka.bootstrap.server: kafka的broker地址
+4. connector-class:org.apache.rocketmq.connect.rocketmq.connector.RocketMQSinkConnector
 
-| key                     | nullable | default | description                                                                            |
-| ----------------------- | -------- | ------- | -------------------------------------------------------------------------------------- |
-| connector-class         | false    |         | 实现Connector接口的类名称（包含包名）                                                  |
-| filename                | false    |         | 数据源文件名称                                                                         |
-| task-class              | false    |         | 实现SourceTask类名称（包含包名）                                                       |
-| topic                   | false    |         | 同步文件数据所需topic                                                                  |
-| update-timestamp        | false    |         | 配置更新时间戳                                                                         |
-| source-record-converter | false    |         | Full class name of the impl of the converter used to convert SourceDataEntry to byte[] |
+新增Connector示例
+GET http://127.0.0.1:8082/connectors/create/kafkaSink?config={"rocketmq.topics":"kafkaconnect","tasks.num":"2","kafka.bootstrap.server":"127.0.0.1:9092","connector-class":"org.apache.rocketmq.connect.rocketmq.connector.RocketMQSinkConnector"}
 
+其中 127.0.0.1:8082 为runtime的任意一台机器,kafkaSink 为connector的名称，connector名称需要全局唯一。
 
-## 8.启动sink connector
+##<font color="#ff7f50">使用理念</font>
 
-```
-    GET请求  
-    http://(your worker ip):(port)/connectors/(connector name)?config={"connector-class":"org.apache.rocketmq.connect.file.FileSinkConnector","topicNames":"fileTopic","filename":"/home/connect/rocketmq-externals/rocketmq-connect-runtime/sink-file.txt","source-record-converter":"org.apache.rocketmq.connect.runtime.converter.JsonConverter"}
-```  
-看到一下日志说明file sink connector启动成功了
+rocketMQ和kafka的消费组名称格式为：connector-consumer-group-${connectorName}
+1. 目前设计理念是，一个connectorName对应一个topic，该connector用来同步自己的topic。N个connector组共同协作合并同步整个MQ集群。connector自己组内可以拆出来N个Task用来拉取同一个topic的消息，通过taskNum控制组内task的数量调整并发度。
 
-2019-07-16 11:24:58 INFO pool-7-thread-2 - Sink task start, config:{"properties":{"source-record-converter":"org.apache.rocketmq.connect.runtime.converter.JsonConverter","filename":"/home/connect/rocketmq-externals/rocketmq-connect-runtime/sink-file.txt","topicNames":"fileTopic","task-class":"org.apache.rocketmq.connect.file.FileSinkTask","connector-class":"org.apache.rocketmq.connect.file.FileSinkConnector","update-timestamp":"1563247498694"}}
+2. 位移同步和持久化都是以topic为维度，而不是消费组的维度。
 
-查看配置中"filename":"/home/connect/rocketmq-externals/rocketmq-connect-runtime/sink-file.txt"配置文件
-如果sink-file.txt生成并且与source-file.txt内容一样，说明整个流程已经跑通
+##<font color="red">运维命令</font>
 
-#### sink connector配置说明
+<font color="#ff7f50"> //查看全部connector config以及对应的task config </font>
 
-| key                     | nullable | default | description                                                                            |
-| ----------------------- | -------- | ------- | -------------------------------------------------------------------------------------- |
-| connector-class         | false    |         | 实现Connector接口的类名称（包含包名）                                                  |
-| topicNames              | false    |         | sink需要处理数据消息topics                                                             |
-| task-class              | false    |         | 实现SourceTask类名称（包含包名）                                                       |
-| filename                | false    |         | sink拉去的数据保存到文件                                                               |
-| update-timestamp        | false    |         | 配置更新时间戳                                                                         |
-| source-record-converter | false    |         | Full class name of the impl of the converter used to convert SourceDataEntry to byte[] |
 
-```  
-注：source/sink配置文件说明是以rocketmq-connect-sample为demo，不同source/sink connector配置有差异，请以具体sourc/sink connector为准
-```  
+app.get("/getConnectorTask", this::getConnectorTask);
 
-## 9.停止connector
+<font color="#ff7f50">//查看全部connector config </font>
 
-```
-    GET请求  
-    http://(your worker ip):(port)/connectors/(connector name)/stop
-```  
-看到一下日志说明connector停止成功了
+app.get("/getConnectors", this::getAllConnectors);
 
-Source task stop, config:{"properties":{"source-record-converter":"org.apache.rocketmq.connect.runtime.converter.JsonConverter","filename":"/home/zhoubo/IdeaProjects/my-new3-rocketmq-externals/rocketmq-connect/rocketmq-connect-runtime/source-file.txt","task-class":"org.apache.rocketmq.connect.file.FileSourceTask","topic":"fileTopic","connector-class":"org.apache.rocketmq.connect.file.FileSourceConnector","update-timestamp":"1564765189322"}}
+<font color="#ff7f50">//查看单个connector config </font>
 
+app.get("/getConnectors/:connectorName", this::getConnectors);
 
-## 10.其它restful接口
+<font color="#ff7f50">//查看指定connector的配置信息 </font>
 
+app.get("/getConnectorTask/:connectorName", this::handleQueryConnectorConfig);
 
-查看集群节点信息
+<font color="#ff7f50">//查看指定connector状态,启用或者禁用或者删除状态 </font>
 
-http://(your worker ip):(port)/getClusterInfo
+app.get("/getConnectorsStatus/:connectorName", this::handleQueryConnectorStatus);
 
-查看集群中Connector和Task配置信息
+<font color="#ff7f50">//动态开启message消息log打印或者关闭打印</font>
 
-http://(your worker ip):(port)/getConfigInfo
+app.get("/logMsgDetail/:trueOrFalse", this::handleLogMsg);
 
-查看当前节点分配Connector和Task配置信息
+<font color="#ff7f50">//查看集群信息</font>
 
-http://(your worker ip):(port)/getAllocatedInfo
+app.get("/getClusterInfo", this::getClusterInfo);
 
-查看指定Connector配置信息
+<font color="#ff7f50">//查看分配给自己的任务的状态</font>
 
-http://(your worker ip):(port)/connectors/(connector name)/config
+app.get("/getAllocatedTask", this::getAllocatedTask);
 
-查看指定Connector状态
+<font color="#ff7f50">//查看所有task的状态，内部会调用其他节点的getAllocatedTask .":byWorker"为true或false,决定展示方式</font>
 
-http://(your worker ip):(port)/connectors/(connector name)/status
+app.get("/getAllTask/:byWorker", this::getAllTask);
 
-停止所有Connector
+<font color="#ff7f50">//插件重新加载,如果增加了新的插件,调用这个方法可以热刷新</font>
 
-http://(your worker ip):(port)/connectors/stopAll
+app.get("/plugin/reload", this::reloadPlugins);
 
-重新加载Connector插件目录下的Connector包
+<font color="#ff7f50">//新增connector</font>
 
-http://(your worker ip):(port)/plugin/reload
+app.get("/connectors/create/:connectorName", this::handleCreateConnector);
 
-从内存删除Connector配置信息（谨慎使用）
+<font color="#ff7f50">//修改connector,可只传入需要修改的参数部分,内部直接覆盖原配置</font>
 
-http://(your worker ip):(port)/connectors/(connector name)/delete
+app.get("/connectors/update/:connectorName", this::handleUpdateConnector);
 
+<font color="#ff7f50">//调整task数量,taskNum为目标任务数量</font>
 
+app.get("/connectors/taskNum/:connectorName/:taskNum", this::handleTaskNum);
 
-## 11.runtime配置参数说明
+<font color="#ff7f50">//启用</font>
 
-| key                      | nullable | default                                                                                         | description                                                                        |
-| ------------------------ | -------- | ----------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
-| workerId                 | false    | DEFAULT_WORKER_1                                                                                | 集群节点唯一标识                                                                   |
-| namesrvAddr              | false    |                                                                                                 | RocketMQ Name Server地址列表，多个NameServer地址用分号隔开                         |
-| httpPort                 | false    | 8081                                                                                            | runtime提供restful接口服务端口                                                     |
-| pluginPaths              | false    |                                                                                                 | source或者sink目录，启动runttime时加载                                             |
-| storePathRootDir         | true     | (user.home)/connectorStore                                                                      | 持久化文件保存目录                                                                 |
-| positionPersistInterval  | true     | 20s                                                                                             | source端持久化position数据间隔                                                     |
-| offsetPersistInterval    | true     | 20s                                                                                             | sink端持久化offset数据间隔                                                         |
-| configPersistInterval    | true     | 20s                                                                                             | 集群中配置信息持久化间隔                                                           |
-| rmqProducerGroup         | true     | defaultProducerGroup                                                                            | Producer组名，多个Producer如果属于一个应用，发送同样的消息，则应该将它们归为同一组 |
-| rmqConsumerGroup         | true     | defaultConsumerGroup                                                                            | Consumer组名，多个Consumer如果属于一个应用，发送同样的消息，则应该将它们归为同一组 |
-| maxMessageSize           | true     | 4MB                                                                                             | RocketMQ最大消息大小                                                               |
-| operationTimeout         | true     | 3s                                                                                              | Producer发送消息超时时间                                                           |
-| rmqMaxRedeliveryTimes    | true     |                                                                                                 | 最大重新消费次数                                                                   |
-| rmqMessageConsumeTimeout | true     | 3s                                                                                              | Consumer超时时间                                                                   |
-| rmqMaxConsumeThreadNums  | true     | 32                                                                                              | Consumer客户端最大线程数                                                           |
-| rmqMinConsumeThreadNums  | true     | 1                                                                                               | Consumer客户端最小线程数                                                           |
-| allocTaskStrategy        | true     | org.apache.rocketmq.connect.<br>runtime.service.strategy.<br>DefaultAllocateConnAndTaskStrategy | 负载均衡策略类                                                                     |
+app.get("/connectors/all/enable", this::handleEnableAllConnector);
 
-### allocTaskStrategy说明
+<font color="#ff7f50">//暂时禁用,配置文件读出来也不会去执行,同时停止该connector对应的Task. task的stop是通过把connector禁用，这样maintainTaskStat时候就不会分配该task，达到维护task的目的</font>
 
-该参数默认可省略，这是一个可选参数，目前选项如下：
+app.get("/connectors/all/disable", this::handleDisableAllConnector);
 
-* 默认值
-  
-  ```java
-  org.apache.rocketmq.connect.runtime.service.strategy.DefaultAllocateTaskStrategy
-  ```
-* 一致性Hash
-  
-```java
-org.apache.rocketmq.connect.runtime.service.strategy.AllocateTaskStrategyByConsistentHash
-```
-### 更多集群和负载均衡文档
+<font color="#ff7f50">//删除</font>
 
-[负载均衡](https://rocketmq-1.gitbook.io/rocketmq-connector/rocketmq-connect-1/rocketmq-runtime/fu-zai-jun-heng)
+app.get("/connectors/all/remove", this::handleRemoveAllConnector);
 
-## 12.runtime支持JVM参数说明
+<font color="#ff7f50">//启用</font>
 
-| key                                             | nullable | default | description             |
-| ----------------------------------------------- | -------- | ------- | ----------------------- |
-| rocketmq.runtime.cluster.rebalance.waitInterval | true     | 20s     | 负载均衡间隔            |
-| rocketmq.runtime.max.message.size               | true     | 4M      | Runtime限制最大消息大小 |
-|[virtualNode](#virtualnode)       |true    |  1        | 一致性hash负载均衡的虚拟节点数|
-|[consistentHashFunc](#consistenthashfunc)|true    |MD5Hash|一致性hash负载均衡算法实现类|
+app.get("/connectors/single/:connectorName/enable", this::handleEnableConnector);
 
-### VirtualNode 
+<font color="#ff7f50">//暂时禁用,配置文件读出来也不会去执行,同时停止该connector对应的Task</font>
 
-一致性hash中虚拟节点数
+app.get("/connectors/single/:connectorName/disable", this::handleDisableConnector);
 
-### consistentHashFunc
+<font color="#ff7f50">//删除</font>
 
-hash算法具体实现类,可以自己实现，在后续版本中会增加更多策略，该类应该实现
+app.get("/connectors/single/:connectorName/remove", this::handleRemoveConnector);
 
-```java
-
-org.apache.rocketmq.common.consistenthash.HashFunction;
-
-package org.apache.rocketmq.common.consistenthash;
-
-public interface HashFunction {
-    long hash(String var1);
-}
-
-```
-
-默认情况下采用的是`MD5Hash`算法
-
-```java
-
-private static class MD5Hash implements HashFunction {
-        MessageDigest instance;
-
-        public MD5Hash() {
-            try {
-                this.instance = MessageDigest.getInstance("MD5");
-            } catch (NoSuchAlgorithmException var2) {
-            }
-
-        }
-
-        public long hash(String key) {
-            this.instance.reset();
-            this.instance.update(key.getBytes());
-            byte[] digest = this.instance.digest();
-            long h = 0L;
-
-            for(int i = 0; i < 4; ++i) {
-                h <<= 8;
-                h |= (long)(digest[i] & 255);
-            }
-
-            return h;
-        }
-    }
-```
-
-## FAQ
-
-Q1：sink-file.txt文件中每行的文本顺序source-file.txt不一致？
-
-A1: source数据到sink中经过rocketmq中转，如果需要顺序消息，需要有序消息发送到同一个queue。
-实现有序消息有2中方式：1、一个topic创建一个queue（rocketmq-connect-runtime目前只能使用这种方式）2、rocketmq-connect-runtime支持顺序消息，通过消息中指定字段处理发送到rocketmq的同一queue（后续支持）
-
-
-
-
-
+源代码查看某个被引入的类来源是哪里，不然经常报class找不到
+<br/>
+org.reflections.scanners.AbstractScanner#put
