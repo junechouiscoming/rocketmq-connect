@@ -1,4 +1,7 @@
-#概要介绍
+# 概要介绍
+
+github展示md有点格式问题，最好用IDEA打开
+
 在我的github上的connect代码是fork出来经过我二次开发的，底层原理可以看原github的材料，在我这里用途是Kafka和RocketMQ数据双向同步，它的完成度还是很高的，只是一些诸如启动端口等参数未开放出来，需要的可以自行二次开发，核心部分是高度可用的，经过了我的完整严苛测试，是准备上生产的代码。
 
 简单理解RocketMQ Connect就是借RocketMQ从其他系统获取数据发送到RocketMQ，然后从RocketMQ消费消息写入到其他系统。主要由Source ，Sink ，Runtime组成。
