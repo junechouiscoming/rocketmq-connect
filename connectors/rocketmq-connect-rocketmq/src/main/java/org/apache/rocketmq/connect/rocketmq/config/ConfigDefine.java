@@ -21,19 +21,19 @@ import java.util.*;
 
 public class ConfigDefine {
     //kafka配置
-    public static String GROUP_ID = "rocketmq.consumer.grp";
     public static String BOOTSTRAP_SERVER = "kafka.bootstrap.server";
 
     //消息从rocketMQ的哪个topic拉出来,逗号分割
-    public static final String TOPIC_NAMES = "rocketmq.topics";
+    public static final String ROCKETMQ_TOPIC = "rocketmq.topic";
+    public static final String KAFKA_TOPIC = "kafka.topic";
 
-    public static String CONNECTOR_CLASS = "connector-class";
+    public static String CONNECTOR_CLASS = "connector.class";
     public static String TASK_NUM = "tasks.num";
 
     public static final Set<String> REQUEST_CONFIG = new HashSet<String>(){
         {
-            add(TOPIC_NAMES);
-            //add(GROUP_ID);
+            add(KAFKA_TOPIC);
+            add(ROCKETMQ_TOPIC);
             add(BOOTSTRAP_SERVER);
         }
     };

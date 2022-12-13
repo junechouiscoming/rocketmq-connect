@@ -35,7 +35,7 @@ public class RuntimeConfigDefine {
     /**
      * The full class name of a specific connector implements.
      */
-    public static final String CONNECTOR_CLASS = "connector-class";
+    public static final String CONNECTOR_CLASS = "connector.class";
 
     /**
      * sink和source的task需要用这个反射，会从Connector.taskClass()然后put到task的config中

@@ -17,11 +17,8 @@
 
 package org.apache.rocketmq.connect.runtime.utils;
 
-import java.util.*;
-
 import org.apache.rocketmq.acl.common.AclClientRPCHook;
 import org.apache.rocketmq.acl.common.SessionCredentials;
-import org.apache.rocketmq.client.consumer.DefaultLitePullConsumer;
 import org.apache.rocketmq.client.consumer.DefaultMQPullConsumer;
 import org.apache.rocketmq.client.consumer.DefaultMQPushConsumer;
 import org.apache.rocketmq.client.exception.MQClientException;
@@ -38,6 +35,8 @@ import org.apache.rocketmq.remoting.RPCHook;
 import org.apache.rocketmq.remoting.common.RemotingUtil;
 import org.apache.rocketmq.remoting.protocol.LanguageCode;
 import org.apache.rocketmq.tools.admin.DefaultMQAdminExt;
+
+import java.util.*;
 
 public class ConnectUtil {
 
@@ -157,10 +156,10 @@ public class ConnectUtil {
             //因为一个nameSrv下可能有多个集群
             //可是发送和消费时候又不区分集群...所以应该是这里改掉,不考虑集群,给nameSrv集群上的所有master都添加订阅消费组
             ClusterInfo clusterInfo = defaultMQAdminExt.examineBrokerClusterInfo();
-            HashMap<String, Set<String>> clusterAddrTable = clusterInfo.getClusterAddrTable();
+            Map<String, Set<String>> clusterAddrTable = clusterInfo.getClusterAddrTable();
             Set<String> masterSet = new HashSet<>();
             if (clusterAddrTable!=null) {
-                HashMap<String, BrokerData> brokerAddrTable = clusterInfo.getBrokerAddrTable();
+                Map<String, BrokerData> brokerAddrTable = clusterInfo.getBrokerAddrTable();
 
                 for (Map.Entry<String/*clusterName*/, Set<String/*brokerName*/>> entry : clusterAddrTable.entrySet()) {
                     Set<String> brokerNameSet = entry.getValue();

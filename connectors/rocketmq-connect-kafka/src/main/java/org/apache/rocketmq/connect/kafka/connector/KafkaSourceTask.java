@@ -197,12 +197,8 @@ public class KafkaSourceTask extends SourceTask {
 
         this.consumer = new KafkaConsumer<>(props);
 
-        String topics = this.config.getString(ConfigDefine.TOPICS);
-        for (String topic : topics.split(",")) {
-            if (!topic.isEmpty()) {
-                topicList.add(topic);
-            }
-        }
+        String topic = this.config.getString(ConfigDefine.KAFKA_TOPIC);
+        topicList.add(topic);
 
         consumer.subscribe(topicList, new MyRebalanceListener());
         log.info("source task subscribe topicList {}", topicList);

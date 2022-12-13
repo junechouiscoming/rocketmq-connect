@@ -22,12 +22,8 @@ import com.alibaba.fastjson.TypeReference;
 import com.alibaba.fastjson.serializer.SerializerFeature;
 import io.openmessaging.KeyValue;
 import io.openmessaging.connector.api.Connector;
-
-import java.util.*;
-import java.util.concurrent.ConcurrentHashMap;
-
-import org.apache.rocketmq.connect.runtime.common.ConnectorAndTaskConfigs;
 import org.apache.rocketmq.connect.runtime.common.ConnectKeyValue;
+import org.apache.rocketmq.connect.runtime.common.ConnectorAndTaskConfigs;
 import org.apache.rocketmq.connect.runtime.common.LoggerName;
 import org.apache.rocketmq.connect.runtime.config.ConnectConfig;
 import org.apache.rocketmq.connect.runtime.config.RuntimeConfigDefine;
@@ -42,9 +38,11 @@ import org.apache.rocketmq.connect.runtime.utils.Plugin;
 import org.apache.rocketmq.connect.runtime.utils.datasync.BrokerBasedLog;
 import org.apache.rocketmq.connect.runtime.utils.datasync.DataSynchronizer;
 import org.apache.rocketmq.connect.runtime.utils.datasync.DataSynchronizerCallback;
-import org.jetbrains.annotations.NotNull;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 
 public class ConfigManagementServiceImpl implements ConfigManagementService {
     private static final Logger log = LoggerFactory.getLogger(LoggerName.ROCKETMQ_RUNTIME);
@@ -277,11 +275,11 @@ public class ConfigManagementServiceImpl implements ConfigManagementService {
         configs.put(RuntimeConfigDefine.CONFIG_STATUS, RuntimeConfigDefine.CONFIG_STATUS_ENABLE);
 
         //mz 检查参数的kv对必须含有必要的某个key例如 connector-class
-        for (String requireConfig : RuntimeConfigDefine.REQUEST_CONFIG) {
-            if (!configs.containsKey(requireConfig)) {
-                throw new IllegalArgumentException("Request config key: " + requireConfig);
-            }
-        }
+        //for (String requireConfig : RuntimeConfigDefine.REQUEST_CONFIG) {
+        //    if (!configs.containsKey(requireConfig)) {
+        //        throw new IllegalArgumentException("Request config key: " + requireConfig);
+        //    }
+        //}
 
         //mz 反射实例化connectorClass
         String connectorClass = configs.getString(RuntimeConfigDefine.CONNECTOR_CLASS);

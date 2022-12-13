@@ -11,8 +11,8 @@
 
 
 **新增Connector示例**
-GET http://127.0.0.1:8082/connectors/create/kafkaSink?config={"topicNames":"kafkaconnect","tasks.num":"2","kafka.bootstrap.server":"127.0.0.1:9092"}
+GET http://127.0.0.1:8081/connectors/create/kafkaSink?config={`"rocketmq.topics":"kafkaconnect","tasks.num":"2","kafka.bootstrap.server":"127.0.0.1:9092"`}
 
-其中 127.0.0.1:8082 为runtime的任意一台机器,kafkaSink 为connector的名称，connector名称需要唯一
+其中 127.0.0.1:8081 为runtime的任意一台机器,kafkaSink 为connector的名称，connector名称需要唯一
 
 **其他运维命令见Runtime的README.md**

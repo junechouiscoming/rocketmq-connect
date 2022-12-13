@@ -22,10 +22,11 @@ import java.util.*;
 public class ConfigDefine {
 
     public static String TASK_NUM = "tasks.num";
-    public static String TOPICS = "kafka.topics";
+    public static String KAFKA_TOPIC = "kafka.topic";
+    public static String ROCKETMQ_TOPIC = "rocketmq.topic";
     public static String GROUP_ID = "kafka.group.id";
     public static String BOOTSTRAP_SERVER = "kafka.bootstrap.server";
-    public static String CONNECTOR_CLASS = "connector-class";
+    public static String CONNECTOR_CLASS = "connector.class";
 
     private String bootstrapServers;
     private String topics;
@@ -57,8 +58,8 @@ public class ConfigDefine {
 
     public static final Set<String> REQUEST_CONFIG = new HashSet<String>(){
         {
-            add(TOPICS);
-            //add(GROUP_ID);
+            add(KAFKA_TOPIC);
+            add(ROCKETMQ_TOPIC);
             add(BOOTSTRAP_SERVER);
         }
     };

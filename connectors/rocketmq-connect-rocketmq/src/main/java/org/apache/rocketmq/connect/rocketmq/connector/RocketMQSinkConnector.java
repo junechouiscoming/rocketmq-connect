@@ -96,11 +96,10 @@ public class RocketMQSinkConnector extends SinkConnector {
             config.put(ConfigDefine.BOOTSTRAP_SERVER, connectConfig.getString(ConfigDefine.BOOTSTRAP_SERVER));
             //common
             config.put(ConfigDefine.CONNECTOR_CLASS, "org.apache.rocketmq.connect.rocketmq.connector.RocketMQSinkConnector");
-
             //从哪个topic消费数据
-            config.put(ConfigDefine.TOPIC_NAMES, connectConfig.getString(ConfigDefine.TOPIC_NAMES));
-            //config.put(ConfigDefine.OFFSET_COMMIT_INTERVAL_MS_CONFIG, connectConfig.getString(ConfigDefine.OFFSET_COMMIT_INTERVAL_MS_CONFIG));
-
+            config.put(ConfigDefine.ROCKETMQ_TOPIC, connectConfig.getString(ConfigDefine.ROCKETMQ_TOPIC));
+            //发送到kafka的哪个topic
+            config.put(ConfigDefine.KAFKA_TOPIC, connectConfig.getString(ConfigDefine.KAFKA_TOPIC));
             configs.add(config);
         }
         return configs;

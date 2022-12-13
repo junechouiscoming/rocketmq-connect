@@ -43,7 +43,7 @@
         <maven.compiler.target>1.8</maven.compiler.target>
 
         <!-- RocketMQ Version-->
-        <rocketmq.version>4.7.0</rocketmq.version>
+        <rocketmq.version>5.0.0</rocketmq.version>
 
     </properties>
 
@@ -255,6 +255,11 @@
         <dependency>
             <groupId>org.reflections</groupId>
             <artifactId>reflections</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.google.code.gson</groupId>
+            <artifactId>gson</artifactId>
+            <version>2.9.0</version>
         </dependency>
     </dependencies>
 </project>

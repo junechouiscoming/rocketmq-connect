@@ -31,12 +31,12 @@
     <licenses>
         <license>
             <name>The Apache Software License, Version 2.0</name>
-            <url>http://www.apache.org/licenses/LICENSE-2.0.txt</url>
+            <url>https://www.apache.org/licenses/LICENSE-2.0.txt</url>
             <distribution>repo</distribution>
         </license>
     </licenses>
     <properties>
-        <rocketmq.version>4.7.0</rocketmq.version>
+        <rocketmq.version>5.0.0</rocketmq.version>
         <junit.version>4.11</junit.version>
         <assertj.version>2.6.0</assertj.version>
         <mockito.version>3.2.4</mockito.version>

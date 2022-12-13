@@ -25,14 +25,10 @@ import io.openmessaging.connector.api.common.QueueMetaData;
 import io.openmessaging.connector.api.data.*;
 import io.openmessaging.connector.api.sink.SinkTask;
 import io.openmessaging.connector.api.sink.SinkTaskContext;
-
-import java.nio.ByteBuffer;
-import java.util.*;
-import java.util.concurrent.*;
-import java.util.concurrent.atomic.AtomicReference;
-import java.util.function.Consumer;
-
-import org.apache.rocketmq.client.consumer.*;
+import org.apache.rocketmq.client.consumer.DefaultMQPullConsumer;
+import org.apache.rocketmq.client.consumer.MessageQueueListener;
+import org.apache.rocketmq.client.consumer.PullResult;
+import org.apache.rocketmq.client.consumer.PullStatus;
 import org.apache.rocketmq.client.exception.MQBrokerException;
 import org.apache.rocketmq.client.exception.MQClientException;
 import org.apache.rocketmq.common.message.MessageExt;
@@ -41,13 +37,21 @@ import org.apache.rocketmq.connect.runtime.ConnectController;
 import org.apache.rocketmq.connect.runtime.common.ConnectKeyValue;
 import org.apache.rocketmq.connect.runtime.common.LoggerName;
 import org.apache.rocketmq.connect.runtime.config.ConnectConfig;
-import org.apache.rocketmq.connect.runtime.config.RuntimeConfigDefine;
 import org.apache.rocketmq.connect.runtime.service.PositionManagementService;
 import org.apache.rocketmq.connect.runtime.store.PositionStorageReaderImpl;
 import org.apache.rocketmq.connect.runtime.utils.Plugin;
 import org.apache.rocketmq.remoting.exception.RemotingException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import java.nio.ByteBuffer;
+import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Consumer;
 
 /**
  * A wrapper of {@link SinkTask} for runtime.
@@ -61,7 +65,7 @@ public class WorkerSinkTask implements WorkerTask {
     /**
      * The configuration key that provides the list of topicNames that are inputs for this SinkTask.
      */
-    public static final String QUEUENAMES_CONFIG = "rocketmq.topics";
+    public static final String QUEUENAMES_CONFIG = "rocketmq.topic";
 
     /**
      * Connector name of current task.

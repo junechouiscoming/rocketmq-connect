@@ -11,12 +11,15 @@ import org.apache.kafka.clients.producer.*;
 import org.apache.kafka.common.header.internals.RecordHeader;
 import org.apache.kafka.common.utils.Bytes;
 import org.apache.rocketmq.connect.rocketmq.config.ConfigDefine;
+import org.apache.rocketmq.connect.rocketmq.util.GsonUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.nio.charset.StandardCharsets;
 import java.util.*;
-import java.util.concurrent.*;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
@@ -51,7 +54,6 @@ public class RocketMQSinkTask extends SinkTask {
         AtomicBoolean successAll = new AtomicBoolean(true);
 
         for (SinkDataEntry entry : sinkDataEntries) {
-
             //reset
             payload = null;
             schema = null;
@@ -60,10 +62,8 @@ public class RocketMQSinkTask extends SinkTask {
             key = null;
             value = null;
 
-
             payload = entry.getPayload();
             schema = entry.getSchema();
-
             header = schema.getField("header");
 
             Callback callback = (metadata, exception) -> {
@@ -85,7 +85,7 @@ public class RocketMQSinkTask extends SinkTask {
                 continue;
             }
 
-            topic = entry.getQueueName();
+            topic = config.getString(ConfigDefine.KAFKA_TOPIC);
             key = schema.getField("key");
             value = schema.getField("value");
 
@@ -102,7 +102,10 @@ public class RocketMQSinkTask extends SinkTask {
 
             //注意如果key不为null时候的顺序性要求,这里key不空一定会被路由到同一个kafka的queue里面
             //这tm是异步啊,差点就写BUG了
-            ProducerRecord record = new ProducerRecord(topic,null,payload[key.getIndex()], Bytes.wrap((byte[]) payload[value.getIndex()]),headerList);
+            byte[] byteValue = (byte[]) payload[value.getIndex()];
+            List<Object> list = GsonUtil.fromJson(new String(byteValue), List.class);
+
+            ProducerRecord record = new ProducerRecord(topic, null, payload[key.getIndex()], Bytes.wrap(list.get(0).toString().getBytes()), headerList);
             if (payload[key.getIndex()]!=null) {
                 try {
                     final Future<RecordMetadata> send = kafkaProducer.send(record);

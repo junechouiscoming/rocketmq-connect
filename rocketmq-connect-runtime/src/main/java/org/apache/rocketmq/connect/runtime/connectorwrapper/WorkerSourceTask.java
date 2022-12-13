@@ -19,35 +19,35 @@ package org.apache.rocketmq.connect.runtime.connectorwrapper;
 
 import com.alibaba.fastjson.JSON;
 import com.alibaba.fastjson.serializer.SerializerFeature;
-import com.google.common.primitives.Longs;
 import io.openmessaging.KeyValue;
 import io.openmessaging.connector.api.PositionStorageReader;
 import io.openmessaging.connector.api.data.Converter;
 import io.openmessaging.connector.api.data.SourceDataEntry;
 import io.openmessaging.connector.api.source.SourceTask;
 import io.openmessaging.connector.api.source.SourceTaskContext;
-
-import java.nio.ByteBuffer;
-import java.nio.charset.StandardCharsets;
-import java.util.*;
-import java.util.concurrent.*;
-import java.util.concurrent.atomic.AtomicReference;
-
 import org.apache.rocketmq.client.exception.MQClientException;
 import org.apache.rocketmq.client.producer.*;
 import org.apache.rocketmq.common.message.Message;
 import org.apache.rocketmq.common.message.MessageQueue;
-import org.apache.rocketmq.common.queue.ConcurrentTreeMap;
 import org.apache.rocketmq.connect.runtime.ConnectController;
 import org.apache.rocketmq.connect.runtime.common.ConnectKeyValue;
 import org.apache.rocketmq.connect.runtime.common.LoggerName;
 import org.apache.rocketmq.connect.runtime.config.ConnectConfig;
 import org.apache.rocketmq.connect.runtime.service.PositionManagementService;
 import org.apache.rocketmq.connect.runtime.store.PositionStorageReaderImpl;
+import org.apache.rocketmq.connect.runtime.utils.GsonUtil;
 import org.apache.rocketmq.connect.runtime.utils.Plugin;
-import org.checkerframework.checker.units.qual.C;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
+import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentSkipListMap;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * A wrapper of {@link SourceTask} for runtime.
@@ -238,18 +238,25 @@ public class WorkerSourceTask implements WorkerTask {
                 sourceDataEntry.setSourcePartition(null);
                 sourceDataEntry.setSourcePosition(null);
                 Message sourceMessage = new Message();
-                //mz 这里的queueName其实是topic名称
-                sourceMessage.setTopic(sourceDataEntry.getQueueName());
+                ArrayList<Object> valueList = new ArrayList<>();
+                String topicName = taskConfig.getString("rocketmq.topic");
+                //从配置中取出目的rocketmq topic
+                sourceMessage.setTopic(topicName);
 
                 byte[] key = (byte[])sourceDataEntry.getPayload()[0];
-                byte[] value = (byte[])sourceDataEntry.getPayload()[1];
+                // 把kafka的消息转成list发给rocketmq，因为rocketmq-proxy消费的消息必须是list
+                byte[] value = (byte[]) sourceDataEntry.getPayload()[1];
+                String jsonObj = GsonUtil.toJson(new String(value));
+                valueList.add(jsonObj);
+                String jsonValue = JSON.toJSONString(valueList);
+
                 Map<String,byte[]> header = (Map<String,byte[]>)sourceDataEntry.getPayload()[2];
 
                 if (key!=null && key.length>0) {
                     sourceMessage.setKeys(new String(key));
                 }
                 sourceMessage.putUserProperty("by_connector","true");
-                sourceMessage.setBody(value.length==0?"default empty body for no exception to send".getBytes(StandardCharsets.UTF_8):value);
+                sourceMessage.setBody(jsonValue.getBytes().length==0?"default empty body for no exception to send".getBytes(StandardCharsets.UTF_8):jsonValue.getBytes());
 
                 final String partitionStr = new String(partition.array());
                 final String positionStr = new String(position.array());
