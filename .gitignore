@@ -11,3 +11,5 @@ devenv
 .idea/
 *.versionsBackup
 .DS_Store
+storeRoot/
+logs/

@@ -275,11 +275,11 @@ public class ConfigManagementServiceImpl implements ConfigManagementService {
         configs.put(RuntimeConfigDefine.CONFIG_STATUS, RuntimeConfigDefine.CONFIG_STATUS_ENABLE);
 
         //mz 检查参数的kv对必须含有必要的某个key例如 connector-class
-        //for (String requireConfig : RuntimeConfigDefine.REQUEST_CONFIG) {
-        //    if (!configs.containsKey(requireConfig)) {
-        //        throw new IllegalArgumentException("Request config key: " + requireConfig);
-        //    }
-        //}
+        for (String requireConfig : RuntimeConfigDefine.REQUEST_CONFIG) {
+            if (!configs.containsKey(requireConfig)) {
+                throw new IllegalArgumentException("Request config key: " + requireConfig);
+            }
+        }
 
         //mz 反射实例化connectorClass
         String connectorClass = configs.getString(RuntimeConfigDefine.CONNECTOR_CLASS);

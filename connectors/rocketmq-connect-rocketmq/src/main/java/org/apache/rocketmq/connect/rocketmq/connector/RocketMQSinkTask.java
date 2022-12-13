@@ -11,7 +11,7 @@ import org.apache.kafka.clients.producer.*;
 import org.apache.kafka.common.header.internals.RecordHeader;
 import org.apache.kafka.common.utils.Bytes;
 import org.apache.rocketmq.connect.rocketmq.config.ConfigDefine;
-import org.apache.rocketmq.connect.rocketmq.util.GsonUtil;
+import org.apache.rocketmq.connect.rocketmq.utils.GsonUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
